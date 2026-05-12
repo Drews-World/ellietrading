@@ -37,6 +37,7 @@ ENV_FILE = ROOT / ".env"
 PORTFOLIO_FILE = Path.home() / ".tradingagents" / "ui_portfolio.json"
 MONITOR_FILE   = Path.home() / ".tradingagents" / "ui_monitors.json"
 SCOUT_FILE     = Path.home() / ".tradingagents" / "ui_scout.json"
+FUND_FILE      = Path.home() / ".tradingagents" / "fund_state.json"
 PORTFOLIO_FILE.parent.mkdir(parents=True, exist_ok=True)
 
 _monitor_executor = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix="monitor")
@@ -166,6 +167,37 @@ def _save_scout(data: dict):
     SCOUT_FILE.write_text(json.dumps(data, indent=2))
 
 
+def _load_fund() -> dict:
+    if FUND_FILE.exists():
+        try:
+            return json.loads(FUND_FILE.read_text())
+        except Exception:
+            pass
+    return {
+        "active": False,
+        "launched_at": None,
+        "last_daily_review": None,
+        "next_daily_review": None,
+        "last_weekly_report": None,
+        "next_weekly_report": None,
+        "config": {
+            "llm_provider": "google",
+            "deep_think_llm": "gemini-2.5-pro",
+            "quick_think_llm": "gemini-2.5-flash",
+            "initial_stocks": 5,
+            "position_pct": 5.0,
+            "max_position_pct": 15.0,
+            "weekly_new_buy": True,
+        },
+        "log": [],
+    }
+
+
+def _save_fund(data: dict):
+    FUND_FILE.parent.mkdir(parents=True, exist_ok=True)
+    FUND_FILE.write_text(json.dumps(data, indent=2))
+
+
 def _first_n_words(text: str, n: int = 40) -> str:
     if not text:
         return ""
@@ -287,6 +319,16 @@ class ScoutConfig(BaseModel):
     quick_think_llm: str = "gemini-2.5-flash"
     theme: str = ""
     max_stocks: int = 3
+
+
+class FundConfig(BaseModel):
+    llm_provider: str = "google"
+    deep_think_llm: str = "gemini-2.5-pro"
+    quick_think_llm: str = "gemini-2.5-flash"
+    initial_stocks: int = 5
+    position_pct: float = 5.0
+    max_position_pct: float = 15.0
+    weekly_new_buy: bool = True
 
 
 # ── Settings endpoints ────────────────────────────────────────────────────────
@@ -977,10 +1019,373 @@ async def _scout_scheduler():
             pass
 
 
+# ── Fund helper functions ─────────────────────────────────────────────────────
+
+_fund_executor = concurrent.futures.ThreadPoolExecutor(max_workers=2, thread_name_prefix="fund")
+
+
+def _fund_log(msg: str):
+    """Append a timestamped log entry to the fund state, capped at 200 entries."""
+    fund = _load_fund()
+    entry = {"ts": datetime.utcnow().isoformat(), "msg": msg}
+    fund.setdefault("log", []).insert(0, entry)
+    fund["log"] = fund["log"][:200]
+    _save_fund(fund)
+
+
+def _run_analysis_simple(ticker: str, cfg: dict):
+    """
+    Run TradingAgentsGraph for a single ticker using cfg's llm settings.
+    Returns (signal, raw_decision, price).
+    """
+    from tradingagents.graph.trading_graph import TradingAgentsGraph
+    from tradingagents.default_config import DEFAULT_CONFIG
+    from tradingagents.agents.utils.agent_states import InvestDebateState, RiskDebateState
+    from tradingagents.dataflows.config import set_config
+
+    date = datetime.utcnow().strftime("%Y-%m-%d")
+
+    ta_cfg = DEFAULT_CONFIG.copy()
+    ta_cfg.update({
+        "llm_provider":            cfg.get("llm_provider", "google"),
+        "deep_think_llm":          cfg.get("deep_think_llm", "gemini-2.5-pro"),
+        "quick_think_llm":         cfg.get("quick_think_llm", "gemini-2.5-flash"),
+        "max_debate_rounds":       1,
+        "max_risk_discuss_rounds": 1,
+    })
+
+    ta = TradingAgentsGraph(debug=False, config=ta_cfg)
+    set_config(ta_cfg)
+
+    past_context = ta.memory_log.get_past_context(ticker)
+    init_state = {
+        "messages": [("human", ticker)],
+        "company_of_interest": ticker,
+        "trade_date": date,
+        "past_context": past_context,
+        "investment_debate_state": InvestDebateState(
+            bull_history="", bear_history="", history="",
+            current_response="", judge_decision="", count=0,
+        ),
+        "risk_debate_state": RiskDebateState(
+            aggressive_history="", conservative_history="", neutral_history="",
+            history="", latest_speaker="", current_aggressive_response="",
+            current_conservative_response="", current_neutral_response="",
+            judge_decision="", count=0,
+        ),
+        "market_report": "", "fundamentals_report": "",
+        "sentiment_report": "", "news_report": "",
+    }
+
+    final_state = None
+    for chunk in ta.graph.stream(
+        init_state, stream_mode="updates",
+        config={"recursion_limit": ta_cfg.get("max_recur_limit", 100)},
+    ):
+        for node_name, state_delta in chunk.items():
+            if node_name == "Portfolio Manager" and isinstance(state_delta, dict):
+                final_state = state_delta
+
+    if not final_state:
+        raise RuntimeError(f"No final state from graph for {ticker}")
+
+    raw_decision = final_state.get("final_trade_decision", "")
+    signal = ta.process_signal(raw_decision)
+    price = _get_current_price(ticker)
+    return signal, raw_decision, price
+
+
+def _run_fund_launch():
+    """Discover stocks, analyze them, buy BUY signals. Runs in thread pool."""
+    try:
+        fund = _load_fund()
+        cfg = fund["config"]
+
+        fund["active"] = True
+        fund["launched_at"] = datetime.utcnow().isoformat()
+        _save_fund(fund)
+        _fund_log("Fund launch started")
+
+        # Enable auto_trade in alpaca config
+        alpaca_cfg = _load_alpaca_config()
+        alpaca_cfg["auto_trade"] = True
+        alpaca_cfg["position_pct"] = cfg.get("position_pct", 5.0)
+        _save_alpaca_config(alpaca_cfg)
+
+        initial_count = int(cfg.get("initial_stocks", 5))
+        picks = _discover_stocks_sync(
+            cfg.get("llm_provider", "google"),
+            cfg.get("quick_think_llm", "gemini-2.5-flash"),
+            "high growth momentum stocks",
+            initial_count * 2,  # request more so we have extras after filtering
+        )
+
+        bought = 0
+        for pick in picks[:initial_count]:
+            ticker = pick.get("ticker", "").upper().strip()
+            if not ticker:
+                continue
+            try:
+                _fund_log(f"Analyzing {ticker}…")
+                signal, raw_decision, price = _run_analysis_simple(ticker, cfg)
+                _fund_log(f"{ticker}: signal={signal}, price=${price}")
+
+                if signal in ("Buy", "Overweight"):
+                    position_pct = cfg.get("position_pct", 5.0)
+                    qty = alpaca_client.calculate_position_size(ticker, position_pct / 100)
+                    if qty > 0:
+                        order = alpaca_client.submit_order(ticker, "buy", qty=qty)
+                        bought += 1
+                        _fund_log(f"Bought {qty} shares of {ticker} (order {order.get('id', '?')})")
+                        _send_discord_webhook(
+                            title=f"🏦 ELLIE Fund — BUY {ticker}",
+                            description=f"Purchased **{qty} shares** of {ticker} @ ${price or '?'}",
+                            signal="Buy",
+                            fields=[
+                                {"name": "Order ID", "value": order.get("id", "?"), "inline": True},
+                                {"name": "Position %", "value": f"{position_pct}%", "inline": True},
+                            ],
+                        )
+                    else:
+                        _fund_log(f"Skipped {ticker}: calculated qty = 0")
+                else:
+                    _fund_log(f"Skipped {ticker}: signal was {signal}")
+            except Exception as exc:
+                _fund_log(f"Error analyzing {ticker}: {exc}")
+                continue
+
+        now = datetime.utcnow()
+        next_daily = (now + timedelta(hours=24)).isoformat()
+        # Next Sunday midnight UTC
+        days_until_sunday = (6 - now.weekday()) % 7 or 7
+        next_sunday = (now + timedelta(days=days_until_sunday)).replace(
+            hour=0, minute=0, second=0, microsecond=0
+        ).isoformat()
+
+        fund = _load_fund()
+        fund["active"] = True
+        fund["next_daily_review"] = next_daily
+        fund["next_weekly_report"] = next_sunday
+        _save_fund(fund)
+
+        _fund_log(f"Fund launch complete — purchased {bought} position(s)")
+        _send_discord_webhook(
+            title="🚀 ELLIE Fund Launched",
+            description=f"Autonomous fund is live — purchased **{bought}** initial position(s).",
+            signal="Buy",
+            footer=f"Next daily review: {next_daily[:10]}",
+        )
+
+    except Exception as exc:
+        _fund_log(f"Fund launch error: {exc}")
+        try:
+            fund = _load_fund()
+            fund["active"] = False
+            _save_fund(fund)
+        except Exception:
+            pass
+
+
+def _run_daily_review():
+    """Review all positions, rebalance based on fresh signals. Runs in thread pool."""
+    try:
+        fund = _load_fund()
+        cfg = fund["config"]
+        _fund_log("Daily review started")
+
+        positions = alpaca_client.get_positions()
+        if not positions:
+            _fund_log("Daily review: no open positions to review")
+            fund = _load_fund()
+            now = datetime.utcnow()
+            fund["last_daily_review"] = now.isoformat()
+            fund["next_daily_review"] = (now + timedelta(hours=24)).isoformat()
+            _save_fund(fund)
+            return
+
+        # Get portfolio value for position sizing checks
+        account = alpaca_client.get_account()
+        portfolio_value = float(account.get("portfolio_value") or account.get("equity") or 0)
+
+        decisions = []
+        for pos in positions:
+            symbol = pos.get("symbol", "")
+            if not symbol:
+                continue
+            try:
+                signal, raw_decision, price = _run_analysis_simple(symbol, cfg)
+                market_value = float(pos.get("market_value") or 0)
+                current_pct = (market_value / portfolio_value * 100) if portfolio_value > 0 else 0
+
+                if signal in ("Sell", "Underweight"):
+                    order = alpaca_client.close_position(symbol)
+                    decisions.append(f"SELL {symbol} (signal={signal})")
+                    _fund_log(f"Closed position in {symbol} — signal={signal}")
+                elif signal in ("Buy", "Overweight"):
+                    max_pct = cfg.get("max_position_pct", 15.0)
+                    if current_pct < max_pct:
+                        add_pct = min(cfg.get("position_pct", 5.0), max_pct - current_pct)
+                        qty = alpaca_client.calculate_position_size(symbol, add_pct / 100)
+                        if qty > 0:
+                            alpaca_client.submit_order(symbol, "buy", qty=qty)
+                            decisions.append(f"ADD {symbol} +{qty} shares (signal={signal})")
+                            _fund_log(f"Added {qty} shares to {symbol} — signal={signal}")
+                        else:
+                            decisions.append(f"HOLD {symbol} (BUY signal, at max position)")
+                            _fund_log(f"Holding {symbol} — already at max position")
+                    else:
+                        decisions.append(f"HOLD {symbol} (BUY signal, at max position {max_pct}%)")
+                        _fund_log(f"Holding {symbol} — at max position {max_pct}%")
+                else:
+                    decisions.append(f"HOLD {symbol} (signal={signal})")
+                    _fund_log(f"Holding {symbol} — signal={signal}")
+            except Exception as exc:
+                decisions.append(f"ERROR {symbol}: {exc}")
+                _fund_log(f"Error reviewing {symbol}: {exc}")
+                continue
+
+        now = datetime.utcnow()
+        summary = "\n".join(decisions) if decisions else "No changes made."
+        _send_discord_webhook(
+            title="📋 ELLIE Daily Review Complete",
+            description=summary[:1900],
+            footer=f"Reviewed {len(positions)} position(s) · {now.strftime('%Y-%m-%d %H:%M')} UTC",
+        )
+
+        fund = _load_fund()
+        fund["last_daily_review"] = now.isoformat()
+        fund["next_daily_review"] = (now + timedelta(hours=24)).isoformat()
+        _save_fund(fund)
+        _fund_log("Daily review complete")
+
+    except Exception as exc:
+        _fund_log(f"Daily review error: {exc}")
+
+
+def _run_weekly_report():
+    """Build and send a weekly performance report. Runs in thread pool."""
+    try:
+        fund = _load_fund()
+        cfg = fund["config"]
+        _fund_log("Weekly report started")
+
+        account = alpaca_client.get_account()
+        positions = alpaca_client.get_positions()
+        orders = alpaca_client.get_orders(limit=50)
+
+        portfolio_value = account.get("portfolio_value") or account.get("equity") or 0
+        cash = account.get("cash") or 0
+        daily_pnl = account.get("equity") and account.get("last_equity") and (
+            float(account["equity"]) - float(account["last_equity"])
+        )
+
+        lines = [
+            f"**Portfolio Value:** ${float(portfolio_value):,.2f}",
+            f"**Cash:** ${float(cash):,.2f}",
+            f"**Today P&L:** ${daily_pnl:+,.2f}" if daily_pnl is not None else "**Today P&L:** —",
+            "",
+            f"**Open Positions ({len(positions)}):**",
+        ]
+        for pos in positions:
+            sym = pos.get("symbol", "?")
+            unrl = pos.get("unrealized_pl") or 0
+            unrl_pct = pos.get("unrealized_plpc") or 0
+            lines.append(
+                f"  • {sym}: ${float(pos.get('market_value') or 0):,.2f} "
+                f"(P&L: ${float(unrl):+,.2f} / {float(unrl_pct)*100:+.1f}%)"
+            )
+
+        report_body = "\n".join(lines)
+
+        _send_discord_webhook(
+            title="📊 ELLIE Weekly Report",
+            description=report_body[:1900],
+            footer=f"Generated {datetime.utcnow().strftime('%Y-%m-%d %H:%M')} UTC",
+        )
+        _fund_log("Weekly report sent to Discord")
+
+        # Optional: discover and buy a new stock
+        if cfg.get("weekly_new_buy", True):
+            try:
+                _fund_log("Discovering new stock for weekly buy…")
+                new_picks = _discover_stocks_sync(
+                    cfg.get("llm_provider", "google"),
+                    cfg.get("quick_think_llm", "gemini-2.5-flash"),
+                    "high growth momentum stocks",
+                    3,
+                )
+                for pick in new_picks:
+                    ticker = pick.get("ticker", "").upper().strip()
+                    if not ticker:
+                        continue
+                    # Skip if already holding
+                    held_symbols = {p.get("symbol", "") for p in positions}
+                    if ticker in held_symbols:
+                        continue
+                    signal, raw_decision, price = _run_analysis_simple(ticker, cfg)
+                    if signal in ("Buy", "Overweight"):
+                        qty = alpaca_client.calculate_position_size(
+                            ticker, cfg.get("position_pct", 5.0) / 100
+                        )
+                        if qty > 0:
+                            order = alpaca_client.submit_order(ticker, "buy", qty=qty)
+                            _fund_log(f"Weekly new buy: {qty} shares of {ticker}")
+                            _send_discord_webhook(
+                                title=f"🏦 ELLIE Weekly New Buy — {ticker}",
+                                description=f"Purchased **{qty} shares** of {ticker} @ ${price or '?'}",
+                                signal="Buy",
+                            )
+                        break
+            except Exception as exc:
+                _fund_log(f"Weekly new buy error: {exc}")
+
+        now = datetime.utcnow()
+        days_until_sunday = (6 - now.weekday()) % 7 or 7
+        next_sunday = (now + timedelta(days=days_until_sunday)).replace(
+            hour=0, minute=0, second=0, microsecond=0
+        ).isoformat()
+
+        fund = _load_fund()
+        fund["last_weekly_report"] = now.isoformat()
+        fund["next_weekly_report"] = next_sunday
+        _save_fund(fund)
+        _fund_log("Weekly report complete")
+
+    except Exception as exc:
+        _fund_log(f"Weekly report error: {exc}")
+
+
+async def _fund_scheduler():
+    """Every 5 min: check if daily review or weekly report is due."""
+    loop = asyncio.get_event_loop()
+    while True:
+        await asyncio.sleep(300)
+        try:
+            fund = _load_fund()
+            if not fund.get("active"):
+                continue
+
+            now = datetime.utcnow()
+
+            # Daily review
+            next_daily = fund.get("next_daily_review")
+            if next_daily and datetime.fromisoformat(next_daily) <= now:
+                await loop.run_in_executor(_fund_executor, _run_daily_review)
+
+            # Weekly report
+            next_weekly = fund.get("next_weekly_report")
+            if next_weekly and datetime.fromisoformat(next_weekly) <= now:
+                await loop.run_in_executor(_fund_executor, _run_weekly_report)
+
+        except Exception:
+            pass
+
+
 @app.on_event("startup")
 async def startup():
     asyncio.create_task(_monitor_scheduler())
     asyncio.create_task(_scout_scheduler())
+    asyncio.create_task(_fund_scheduler())
     token = os.environ.get("DISCORD_BOT_TOKEN", "").strip()
     if token:
         t = threading.Thread(target=_run_discord_bot, daemon=True)
@@ -1366,3 +1771,74 @@ async def save_alpaca_config(data: AlpacaTradeConfig):
     })
     _save_alpaca_config(cfg)
     return cfg
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  AUTONOMOUS FUND
+# ══════════════════════════════════════════════════════════════════════════════
+
+@app.get("/fund")
+async def get_fund():
+    """Return current fund state."""
+    return _load_fund()
+
+
+@app.post("/fund/launch")
+async def launch_fund():
+    """Begin the autonomous fund — discover stocks, analyze, buy BUY signals."""
+    fund = _load_fund()
+    if fund.get("active"):
+        return {"ok": False, "message": "Fund is already active"}
+    loop = asyncio.get_event_loop()
+    loop.run_in_executor(_fund_executor, _run_fund_launch)
+    return {"ok": True}
+
+
+@app.post("/fund/pause")
+async def pause_fund():
+    """Pause the fund (stop scheduled reviews; disable auto_trade)."""
+    fund = _load_fund()
+    fund["active"] = False
+    _save_fund(fund)
+    alpaca_cfg = _load_alpaca_config()
+    alpaca_cfg["auto_trade"] = False
+    _save_alpaca_config(alpaca_cfg)
+    _fund_log("Fund paused by user")
+    return {"ok": True}
+
+
+@app.post("/fund/resume")
+async def resume_fund():
+    """Resume a paused fund (re-enable scheduled reviews and auto_trade)."""
+    fund = _load_fund()
+    fund["active"] = True
+    _save_fund(fund)
+    alpaca_cfg = _load_alpaca_config()
+    alpaca_cfg["auto_trade"] = True
+    _save_alpaca_config(alpaca_cfg)
+    _fund_log("Fund resumed by user")
+    return {"ok": True}
+
+
+@app.post("/fund/config")
+async def update_fund_config(data: FundConfig):
+    """Update fund configuration."""
+    fund = _load_fund()
+    fund["config"] = data.model_dump()
+    _save_fund(fund)
+    return fund
+
+
+@app.post("/fund/review")
+async def trigger_fund_review():
+    """Manually trigger an immediate daily review."""
+    loop = asyncio.get_event_loop()
+    loop.run_in_executor(_fund_executor, _run_daily_review)
+    return {"ok": True}
+
+
+@app.get("/fund/log")
+async def get_fund_log():
+    """Return the fund activity log."""
+    fund = _load_fund()
+    return fund.get("log", [])

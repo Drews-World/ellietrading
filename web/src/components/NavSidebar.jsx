@@ -5,6 +5,7 @@ const NAV = [
   { id: 'portfolio', icon: '💼', label: 'Portfolio' },
   { id: 'monitor',   icon: '🔔', label: 'Monitor' },
   { id: 'scout',     icon: '🤖', label: 'Scout' },
+  { id: 'fund',      icon: '🏦', label: 'Fund' },
   { id: 'brokerage', icon: '📊', label: 'Broker' },
   { id: 'settings',  icon: '⚙', label: 'Settings' },
 ]

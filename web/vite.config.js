@@ -17,6 +17,7 @@ export default defineConfig({
       '/run':          'http://localhost:8000',
       '/scout':        'http://localhost:8000',
       '/alpaca':       'http://localhost:8000',
+      '/fund':         'http://localhost:8000',
     },
   },
 })
