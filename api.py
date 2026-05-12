@@ -676,7 +676,8 @@ async def get_market_data(ticker: str, period: str = "3mo"):
 
 # ── Discover endpoint ─────────────────────────────────────────────────────────
 
-def _discover_stocks_sync(llm_provider: str, model: str, theme: str, count: int) -> list:
+def _discover_stocks_sync(llm_provider: str, model: str, theme: str, count: int, exclude: list = None) -> list:
+    import random
     from tradingagents.llm_clients.factory import create_llm_client
     from langchain_core.messages import HumanMessage
 
@@ -690,10 +691,47 @@ def _discover_stocks_sync(llm_provider: str, model: str, theme: str, count: int)
     )
     today = datetime.utcnow().strftime("%Y-%m-%d")
 
-    prompt = f"""You are a senior equity analyst. Today is {today}.
+    # Sector rotation — pick 3 random sectors to force variety
+    all_sectors = [
+        "Healthcare & Biotech", "Financials & Banking", "Energy & Clean Energy",
+        "Industrials & Defense", "Consumer Discretionary & Retail",
+        "Consumer Staples & Food", "Materials & Mining", "Real Estate & REITs",
+        "Utilities", "Semiconductors", "Software & SaaS", "E-commerce & Marketplaces",
+        "Cybersecurity", "Cloud Infrastructure", "Transportation & Logistics",
+        "Media & Entertainment", "Telecom", "Agriculture & Commodities",
+    ]
+    focus_sectors = random.sample(all_sectors, min(3, len(all_sectors)))
+    sector_line = f"Prioritize these sectors this time: {', '.join(focus_sectors)}."
+
+    # Exclude already-held or recently-picked tickers
+    exclude_clean = [t.upper().strip() for t in (exclude or []) if t]
+    exclude_line = (
+        f"Do NOT include these tickers (already held or recently analyzed): {', '.join(exclude_clean)}."
+        if exclude_clean else ""
+    )
+
+    # Add a random "lens" so the model doesn't always give the same answer
+    lenses = [
+        "Focus on under-the-radar small and mid-cap names, not mega-caps.",
+        "Avoid the top 20 S&P 500 names by market cap. Find less-covered opportunities.",
+        "Look for companies with recent analyst upgrades or positive earnings surprises.",
+        "Look for contrarian plays — beaten-down stocks with improving fundamentals.",
+        "Find companies with upcoming earnings catalysts in the next 30 days.",
+        "Focus on dividend growers with strong free cash flow.",
+        "Look for companies benefiting from recent macro shifts (rates, inflation, AI adoption).",
+        "Find stocks that have pulled back 15-30% from highs but have strong business momentum.",
+    ]
+    lens_line = random.choice(lenses)
+
+    prompt = f"""You are a senior equity analyst with a contrarian streak. Today is {today}.
 {theme_line}
-Identify {count} US-listed stocks that are worth a deep fundamental analysis RIGHT NOW.
-Consider recent earnings, upcoming catalysts, sector momentum, news events, and valuation.
+{sector_line}
+{lens_line}
+{exclude_line}
+
+Identify {count} US-listed stocks worth a deep fundamental analysis RIGHT NOW.
+Be specific and varied — do NOT default to NVDA, AAPL, MSFT, AMZN, GOOGL, META, TSLA unless there is a very specific, timely catalyst.
+Consider recent earnings surprises, upcoming catalysts, sector momentum, news events, and valuation.
 
 Respond ONLY with a JSON array — no markdown, no explanation, just the array:
 [
@@ -709,7 +747,7 @@ Respond ONLY with a JSON array — no markdown, no explanation, just the array:
         return []
     try:
         picks = json.loads(match.group())
-        return [
+        results = [
             {
                 "ticker": p.get("ticker", "").upper().strip(),
                 "company": p.get("company", ""),
@@ -717,8 +755,11 @@ Respond ONLY with a JSON array — no markdown, no explanation, just the array:
                 "reason": p.get("reason", ""),
             }
             for p in picks
-            if p.get("ticker")
-        ][:count]
+            if p.get("ticker") and p.get("ticker", "").upper().strip() not in exclude_clean
+        ]
+        # Shuffle slightly so we don't always analyze in the same order
+        random.shuffle(results)
+        return results[:count]
     except Exception:
         return []
 
@@ -1159,11 +1200,14 @@ def _run_fund_launch():
 
         initial_count = int(cfg.get("initial_stocks", 5))
         target = initial_count
+        # Exclude already-held positions so we don't double-buy
+        held_symbols = [p.get("symbol", "") for p in alpaca_client.get_positions()]
         picks = _discover_stocks_sync(
             cfg.get("llm_provider", "google"),
             cfg.get("quick_think_llm", "gemini-2.5-flash"),
-            "high growth momentum stocks",
-            initial_count * 3,  # request more so we have extras after filtering
+            cfg.get("scout_theme", ""),  # user can set a theme, blank = diverse
+            initial_count * 3,
+            exclude=held_symbols,
         )
 
         bought = 0
@@ -1372,19 +1416,20 @@ def _run_weekly_report():
         if cfg.get("weekly_new_buy", True):
             try:
                 _fund_log("Discovering new stock for weekly buy…")
+                held_symbols_list = [p.get("symbol", "") for p in positions]
                 new_picks = _discover_stocks_sync(
                     cfg.get("llm_provider", "google"),
                     cfg.get("quick_think_llm", "gemini-2.5-flash"),
-                    "high growth momentum stocks",
-                    3,
+                    cfg.get("scout_theme", ""),
+                    5,  # ask for more so we have options after filtering
+                    exclude=held_symbols_list,
                 )
                 for j, pick in enumerate(new_picks):
                     ticker = pick.get("ticker", "").upper().strip()
                     if not ticker:
                         continue
-                    # Skip if already holding
-                    held_symbols = {p.get("symbol", "") for p in positions}
-                    if ticker in held_symbols:
+                    # Skip if already holding (double-check)
+                    if ticker in held_symbols_list:
                         continue
                     if j > 0:
                         import time as _time
