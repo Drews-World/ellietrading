@@ -1172,12 +1172,28 @@ def _run_analysis_simple(ticker: str, cfg: dict, max_retries: int = 3):
                 # Parse retry delay from error if available, default to 90s
                 wait = 90
                 import re as _re
-                m = _re.search(r'retry.*?(\d+)s', exc_str, _re.IGNORECASE)
+                # Try to parse retryDelay field specifically (e.g. 'retryDelay': '29s')
+                m = _re.search(r"retryDelay['\"]?\s*:\s*['\"]?(\d+)s", exc_str, _re.IGNORECASE)
                 if m:
-                    wait = max(int(m.group(1)) + 15, 60)
+                    parsed = int(m.group(1))
+                    wait = min(max(parsed + 15, 60), 120)  # cap at 120s
+                else:
+                    # Exponential backoff: 60s, 90s
+                    wait = 60 + attempt * 30
                 _fund_log(f"{ticker}: rate limited (429) — waiting {wait}s before retry {attempt + 2}/{max_retries}…")
+                _send_discord_webhook(
+                    title=f"⏳ Rate Limited — {ticker}",
+                    description=f"Gemini quota hit. Waiting **{wait}s** then retrying (attempt {attempt + 2}/{max_retries}).",
+                    signal="Hold",
+                )
                 time.sleep(wait)
             else:
+                _fund_log(f"Error analyzing {ticker}: {exc}")
+                _send_discord_webhook(
+                    title=f"❌ Analysis Failed — {ticker}",
+                    description=f"```{str(exc)[:800]}```",
+                    signal="",
+                )
                 raise
 
 
@@ -1250,6 +1266,11 @@ def _run_fund_launch():
                     _fund_log(f"Skipped {ticker}: signal was {signal}")
             except Exception as exc:
                 _fund_log(f"Error analyzing {ticker}: {exc}")
+                _send_discord_webhook(
+                    title=f"⚠️ Fund — Skipped {ticker}",
+                    description=f"Error during analysis: {str(exc)[:500]}",
+                    signal="",
+                )
                 continue
 
         now = datetime.utcnow()
@@ -1276,6 +1297,11 @@ def _run_fund_launch():
 
     except Exception as exc:
         _fund_log(f"Fund launch error: {exc}")
+        _send_discord_webhook(
+            title="🚨 Fund Launch Failed",
+            description=f"```{str(exc)[:800]}```",
+            signal="",
+        )
         try:
             fund = _load_fund()
             fund["active"] = False
@@ -1350,6 +1376,11 @@ def _run_daily_review():
             except Exception as exc:
                 decisions.append(f"ERROR {symbol}: {exc}")
                 _fund_log(f"Error reviewing {symbol}: {exc}")
+                _send_discord_webhook(
+                    title=f"⚠️ Daily Review — Error on {symbol}",
+                    description=f"{str(exc)[:500]}",
+                    signal="",
+                )
                 continue
 
         now = datetime.utcnow()
@@ -1368,6 +1399,11 @@ def _run_daily_review():
 
     except Exception as exc:
         _fund_log(f"Daily review error: {exc}")
+        _send_discord_webhook(
+            title="🚨 Daily Review Failed",
+            description=f"```{str(exc)[:800]}```",
+            signal="",
+        )
 
 
 def _run_weekly_report():
@@ -1466,6 +1502,11 @@ def _run_weekly_report():
 
     except Exception as exc:
         _fund_log(f"Weekly report error: {exc}")
+        _send_discord_webhook(
+            title="🚨 Weekly Report Failed",
+            description=f"```{str(exc)[:800]}```",
+            signal="",
+        )
 
 
 async def _fund_scheduler():
