@@ -160,6 +160,24 @@ export default function FundView() {
     finally { setBusy(false) }
   }
 
+  const handleReset = async () => {
+    if (!window.confirm(
+      'This will reset the fund state and clear the activity log.\n\nYour Alpaca positions will NOT be affected — only ELLIE\'s internal tracking is reset.\n\nContinue?'
+    )) return
+    setBusy(true)
+    try {
+      const r = await fetch('/fund/reset', { method: 'POST' })
+      const d = await r.json()
+      if (d.ok) {
+        showMsg('Fund reset — you can now relaunch.')
+        load()
+      } else {
+        showMsg(d.message || 'Reset failed', true)
+      }
+    } catch { showMsg('Network error', true) }
+    finally { setBusy(false) }
+  }
+
   // Detect paper trading from Alpaca base URL
   const alpacaBaseUrl = account?.account_number ? 'https://app.alpaca.markets' : 'https://app.alpaca.markets'
   const isPaperMode = !account || account?.status === 'ACTIVE' // simplified — backend sets paper flag
@@ -444,6 +462,20 @@ export default function FundView() {
               disabled={busy}
             >
               Save Configuration
+            </button>
+          </div>
+
+          <div className={styles.dangerZone}>
+            <div className={styles.dangerTitle}>Danger Zone</div>
+            <p className={styles.dangerNote}>
+              Reset clears ELLIE's internal state so you can relaunch. Your actual Alpaca positions are not affected.
+            </p>
+            <button
+              className={styles.resetBtn}
+              onClick={handleReset}
+              disabled={busy}
+            >
+              🔁 Reset & Relaunch
             </button>
           </div>
         </div>

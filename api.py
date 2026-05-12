@@ -1870,6 +1870,26 @@ async def trigger_fund_review():
     return {"ok": True}
 
 
+@app.post("/fund/reset")
+async def reset_fund():
+    """Reset fund state so it can be relaunched from the UI."""
+    fund = _load_fund()
+    preserved_cfg = fund.get("config", {})
+    FUND_FILE.parent.mkdir(parents=True, exist_ok=True)
+    reset_state = {
+        "active": False,
+        "launched_at": None,
+        "last_daily_review": None,
+        "next_daily_review": None,
+        "last_weekly_report": None,
+        "next_weekly_report": None,
+        "config": preserved_cfg,
+        "log": [],
+    }
+    FUND_FILE.write_text(json.dumps(reset_state, indent=2))
+    return {"ok": True, "message": "Fund reset. You can now relaunch."}
+
+
 @app.get("/fund/log")
 async def get_fund_log():
     """Return the fund activity log."""
