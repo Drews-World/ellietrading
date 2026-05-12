@@ -5,10 +5,9 @@ import NavSidebar from './components/NavSidebar'
 import AnalyzeView from './views/AnalyzeView'
 import PortfolioView from './views/PortfolioView'
 import SettingsView from './views/SettingsView'
-import MonitorView from './views/MonitorView'
-import ScoutView from './views/ScoutView'
 import BrokerageView from './views/BrokerageView'
 import FundView from './views/FundView'
+import OperationsView from './views/OperationsView'
 
 export default function App() {
   const [activeView, setActiveView] = useState('analyze')
@@ -33,13 +32,12 @@ export default function App() {
       <div className={styles.body}>
         <NavSidebar activeView={activeView} onNav={setActiveView} monitorUnread={monitorUnread} />
         <main className={styles.main}>
-          {activeView === 'analyze'   && <AnalyzeView />}
-          {activeView === 'portfolio' && <PortfolioView />}
-          {activeView === 'monitor'   && <MonitorView />}
-          {activeView === 'scout'     && <ScoutView />}
-          {activeView === 'fund'      && <FundView />}
-          {activeView === 'brokerage' && <BrokerageView />}
-          {activeView === 'settings'  && <SettingsView />}
+          {activeView === 'analyze'    && <AnalyzeView />}
+          {activeView === 'portfolio'  && <PortfolioView />}
+          {activeView === 'operations' && <OperationsView />}
+          {activeView === 'fund'       && <FundView />}
+          {activeView === 'brokerage'  && <BrokerageView />}
+          {activeView === 'settings'   && <SettingsView />}
         </main>
       </div>
     </div>

@@ -1,7 +1,46 @@
+/* Analyze outer container (wraps subtabs + content) */
+.analyzeContainer {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  gap: 0;
+}
+
+/* Sub-tab bar */
+.subTabs {
+  display: flex;
+  gap: 4px;
+  padding: 0 0 10px 0;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 10px;
+  flex-shrink: 0;
+}
+
+.subTab {
+  padding: 6px 18px;
+  font-size: 13px;
+  font-weight: 500;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-panel);
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+
+.subTab:hover { background: var(--bg-card); color: var(--text-primary); }
+
+.subTabActive {
+  background: var(--indigo, #6366f1);
+  color: #fff;
+  border-color: var(--indigo, #6366f1);
+}
+
 .layout {
   display: flex;
   gap: 14px;
-  height: 100%;
+  flex: 1;
   min-height: 0;
   position: relative;
 }

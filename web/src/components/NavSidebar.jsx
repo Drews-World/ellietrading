@@ -1,13 +1,12 @@
 import styles from './NavSidebar.module.css'
 
 const NAV = [
-  { id: 'analyze',   icon: '⚡', label: 'Analyze' },
-  { id: 'portfolio', icon: '💼', label: 'Portfolio' },
-  { id: 'monitor',   icon: '🔔', label: 'Monitor' },
-  { id: 'scout',     icon: '🤖', label: 'Scout' },
-  { id: 'fund',      icon: '🏦', label: 'Fund' },
-  { id: 'brokerage', icon: '📊', label: 'Broker' },
-  { id: 'settings',  icon: '⚙', label: 'Settings' },
+  { id: 'analyze',    icon: '⚡', label: 'Analyze' },
+  { id: 'portfolio',  icon: '💼', label: 'Portfolio' },
+  { id: 'operations', icon: '🏢', label: 'Ops' },
+  { id: 'fund',       icon: '🏦', label: 'Fund' },
+  { id: 'brokerage',  icon: '📊', label: 'Broker' },
+  { id: 'settings',   icon: '⚙', label: 'Settings' },
 ]
 
 export default function NavSidebar({ activeView, onNav, monitorUnread = 0 }) {

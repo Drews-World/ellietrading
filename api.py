@@ -38,6 +38,7 @@ PORTFOLIO_FILE = Path.home() / ".tradingagents" / "ui_portfolio.json"
 MONITOR_FILE   = Path.home() / ".tradingagents" / "ui_monitors.json"
 SCOUT_FILE     = Path.home() / ".tradingagents" / "ui_scout.json"
 FUND_FILE      = Path.home() / ".tradingagents" / "fund_state.json"
+PORTFOLIO_HISTORY_FILE = Path.home() / ".tradingagents" / "portfolio_history.json"
 PORTFOLIO_FILE.parent.mkdir(parents=True, exist_ok=True)
 
 _monitor_executor = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix="monitor")
@@ -1035,6 +1036,29 @@ def _fund_log(msg: str):
     _save_fund(fund)
 
 
+def _log_portfolio_action(ticker: str, action: str, qty, price, signal: str, reasoning: str = "", order_id: str = ""):
+    """Append a buy/sell/hold event to the portfolio history file."""
+    history = []
+    if PORTFOLIO_HISTORY_FILE.exists():
+        try:
+            history = json.loads(PORTFOLIO_HISTORY_FILE.read_text())
+        except Exception:
+            pass
+    entry = {
+        "ts": datetime.utcnow().isoformat(),
+        "ticker": ticker,
+        "action": action,       # "BUY", "SELL", "ADD", "HOLD"
+        "qty": qty,
+        "price": price,
+        "signal": signal,
+        "reasoning": (reasoning or "")[:800],
+        "order_id": order_id or "",
+    }
+    history.insert(0, entry)
+    PORTFOLIO_HISTORY_FILE.parent.mkdir(parents=True, exist_ok=True)
+    PORTFOLIO_HISTORY_FILE.write_text(json.dumps(history[:300], indent=2))
+
+
 def _run_analysis_simple(ticker: str, cfg: dict, max_retries: int = 3):
     """
     Run TradingAgentsGraph for a single ticker using cfg's llm settings.
@@ -1134,15 +1158,18 @@ def _run_fund_launch():
         _save_alpaca_config(alpaca_cfg)
 
         initial_count = int(cfg.get("initial_stocks", 5))
+        target = initial_count
         picks = _discover_stocks_sync(
             cfg.get("llm_provider", "google"),
             cfg.get("quick_think_llm", "gemini-2.5-flash"),
             "high growth momentum stocks",
-            initial_count * 2,  # request more so we have extras after filtering
+            initial_count * 3,  # request more so we have extras after filtering
         )
 
         bought = 0
-        for i, pick in enumerate(picks[:initial_count]):
+        for i, pick in enumerate(picks):
+            if bought >= target:
+                break
             ticker = pick.get("ticker", "").upper().strip()
             if not ticker:
                 continue
@@ -1163,6 +1190,7 @@ def _run_fund_launch():
                         order = alpaca_client.submit_order(ticker, "buy", qty=qty)
                         bought += 1
                         _fund_log(f"Bought {qty} shares of {ticker} (order {order.get('id', '?')})")
+                        _log_portfolio_action(ticker, "BUY", qty, price, signal, reasoning=raw_decision, order_id=order.get("id", ""))
                         _send_discord_webhook(
                             title=f"🏦 ELLIE Fund — BUY {ticker}",
                             description=f"Purchased **{qty} shares** of {ticker} @ ${price or '?'}",
@@ -1252,6 +1280,7 @@ def _run_daily_review():
                     order = alpaca_client.close_position(symbol)
                     decisions.append(f"SELL {symbol} (signal={signal})")
                     _fund_log(f"Closed position in {symbol} — signal={signal}")
+                    _log_portfolio_action(symbol, "SELL", pos.get("qty"), price, signal, reasoning=raw_decision)
                 elif signal in ("Buy", "Overweight"):
                     max_pct = cfg.get("max_position_pct", 15.0)
                     if current_pct < max_pct:
@@ -1261,15 +1290,19 @@ def _run_daily_review():
                             alpaca_client.submit_order(symbol, "buy", qty=qty)
                             decisions.append(f"ADD {symbol} +{qty} shares (signal={signal})")
                             _fund_log(f"Added {qty} shares to {symbol} — signal={signal}")
+                            _log_portfolio_action(symbol, "ADD", qty, price, signal, reasoning=raw_decision)
                         else:
                             decisions.append(f"HOLD {symbol} (BUY signal, at max position)")
                             _fund_log(f"Holding {symbol} — already at max position")
+                            _log_portfolio_action(symbol, "HOLD", 0, price, signal, reasoning=raw_decision)
                     else:
                         decisions.append(f"HOLD {symbol} (BUY signal, at max position {max_pct}%)")
                         _fund_log(f"Holding {symbol} — at max position {max_pct}%")
+                        _log_portfolio_action(symbol, "HOLD", 0, price, signal, reasoning=raw_decision)
                 else:
                     decisions.append(f"HOLD {symbol} (signal={signal})")
                     _fund_log(f"Holding {symbol} — signal={signal}")
+                    _log_portfolio_action(symbol, "HOLD", 0, price, signal, reasoning=raw_decision)
             except Exception as exc:
                 decisions.append(f"ERROR {symbol}: {exc}")
                 _fund_log(f"Error reviewing {symbol}: {exc}")
@@ -1897,3 +1930,14 @@ async def get_fund_log():
     """Return the fund activity log."""
     fund = _load_fund()
     return fund.get("log", [])
+
+
+@app.get("/portfolio/history")
+async def get_portfolio_history():
+    """Return the fund trade history with reasoning."""
+    if not PORTFOLIO_HISTORY_FILE.exists():
+        return []
+    try:
+        return json.loads(PORTFOLIO_HISTORY_FILE.read_text())
+    except Exception:
+        return []

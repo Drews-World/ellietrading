@@ -145,6 +145,8 @@
 .badge_red    { color: var(--red);    background: var(--red-light);    }
 .badge_yellow { color: var(--yellow); background: var(--yellow-light); }
 .badge_indigo { color: var(--indigo); background: var(--indigo-light); }
+.badge_blue   { color: #2563eb;       background: #dbeafe;             }
+.badge_gray   { color: #6b7280;       background: #f3f4f6;             }
 
 .pnl_green { color: var(--green) !important; font-weight: 600; font-family: var(--font-mono); }
 .pnl_red   { color: var(--red)   !important; font-weight: 600; font-family: var(--font-mono); }
@@ -176,4 +178,107 @@
   font-size: 13px;
   padding: 60px 0;
   text-align: center;
+}
+
+/* ── Tab bar ── */
+.tabs {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 4px;
+  flex-shrink: 0;
+}
+
+.tab {
+  padding: 7px 20px;
+  font-size: 13px;
+  font-weight: 500;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-panel);
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+
+.tab:hover { background: var(--bg-card); color: var(--text-primary); }
+
+.tabActive {
+  background: var(--indigo, #6366f1);
+  color: #fff;
+  border-color: var(--indigo, #6366f1);
+}
+
+/* ── Trade history list ── */
+.historyList {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  overflow-y: auto;
+  flex: 1;
+}
+
+.historyEntry {
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+}
+
+.historyTop {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 14px;
+  cursor: pointer;
+  transition: background 0.1s;
+}
+
+.historyTop:hover { background: var(--bg-hover); }
+
+.historyLeft {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  font-size: 13px;
+}
+
+.historyRight {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-shrink: 0;
+  font-size: 12px;
+}
+
+.historyTicker {
+  font-weight: 700;
+  font-family: var(--font-mono);
+  letter-spacing: 0.04em;
+  color: var(--text-primary);
+}
+
+.expandBtn {
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+  font-size: 11px;
+  padding: 2px 8px;
+  cursor: pointer;
+  transition: background 0.1s;
+}
+
+.expandBtn:hover { background: var(--bg-card); }
+
+.historyReasoning {
+  padding: 10px 14px 12px;
+  border-top: 1px solid var(--border);
+  background: var(--bg-base);
+  font-size: 12.5px;
+  color: var(--text-secondary);
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-word;
 }

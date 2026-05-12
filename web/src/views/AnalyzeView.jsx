@@ -6,6 +6,8 @@ import AgentDetailDrawer from '../components/AgentDetailDrawer'
 import DecisionPanel from '../components/DecisionPanel'
 import ResultPanel from '../components/ResultPanel'
 import RunHistory from '../components/RunHistory'
+import ScoutView from './ScoutView'
+import MonitorView from './MonitorView'
 import styles from './AnalyzeView.module.css'
 
 const INITIAL_CONFIG = {
@@ -18,6 +20,7 @@ const INITIAL_CONFIG = {
 }
 
 export default function AnalyzeView() {
+  const [analyzeTab, setAnalyzeTab] = useState('analyze')
   const [config, setConfig] = useState(INITIAL_CONFIG)
   const [isRunning, setIsRunning] = useState(false)
   const [agents, setAgents] = useState({})
@@ -182,6 +185,24 @@ export default function AnalyzeView() {
   }, [config, runAnalysis])
 
   return (
+    <div className={styles.analyzeContainer}>
+      {/* Sub-tab bar */}
+      <div className={styles.subTabs}>
+        {['analyze', 'scout', 'monitor'].map(t => (
+          <button
+            key={t}
+            className={[styles.subTab, analyzeTab === t && styles.subTabActive].filter(Boolean).join(' ')}
+            onClick={() => setAnalyzeTab(t)}
+          >
+            {t === 'analyze' ? 'Analyze' : t === 'scout' ? 'Scout' : 'Monitor'}
+          </button>
+        ))}
+      </div>
+
+      {analyzeTab === 'scout'   && <ScoutView />}
+      {analyzeTab === 'monitor' && <MonitorView />}
+
+      {analyzeTab === 'analyze' && (
     <div className={[styles.layout, decision && styles.layoutWide].filter(Boolean).join(' ')}>
       <div className={styles.left}>
         <ConfigPanel config={config} onChange={setConfig} onRun={runAnalysis} isRunning={isRunning} />
@@ -223,6 +244,8 @@ export default function AnalyzeView() {
           data={agents[selectedAgent]}
           onClose={() => setSelectedAgent(null)}
         />
+      )}
+    </div>
       )}
     </div>
   )
