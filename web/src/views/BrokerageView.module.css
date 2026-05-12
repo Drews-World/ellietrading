@@ -1,0 +1,399 @@
+.page {
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  max-width: 1100px;
+  margin: 0 auto;
+}
+
+/* ── Header ── */
+.pageHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.pageTitle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--text-primary);
+  letter-spacing: -0.01em;
+}
+
+.paperBadge {
+  font-size: 10px;
+  font-weight: 700;
+  background: #fde68a;
+  color: #92400e;
+  border: 1px solid #fcd34d;
+  border-radius: 4px;
+  padding: 2px 7px;
+  letter-spacing: 0.05em;
+}
+
+.refreshBtn {
+  font-size: 12px;
+  color: var(--text-secondary);
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 5px 12px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.refreshBtn:hover { background: var(--bg-card); }
+
+/* ── Metric cards ── */
+.metricsRow {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 12px;
+}
+
+.metricCard {
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 14px 16px;
+  box-shadow: var(--shadow-sm);
+}
+
+.metricLabel {
+  font-size: 11px;
+  color: var(--text-secondary);
+  font-weight: 500;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  margin-bottom: 6px;
+}
+
+.metricValue {
+  font-size: 22px;
+  font-weight: 700;
+  color: var(--text-primary);
+  letter-spacing: -0.02em;
+  font-variant-numeric: tabular-nums;
+}
+
+.metricSub {
+  font-size: 12px;
+  color: var(--text-dim);
+  margin-top: 2px;
+}
+
+/* ── Auto-trade card ── */
+.autoTradeCard {
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 16px 18px;
+  box-shadow: var(--shadow-sm);
+}
+
+.autoTradeHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.autoTradeTitle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.badgeOn {
+  font-size: 10px;
+  font-weight: 700;
+  background: #d1fae5;
+  color: #065f46;
+  border: 1px solid #a7f3d0;
+  border-radius: 4px;
+  padding: 2px 7px;
+  letter-spacing: 0.05em;
+}
+
+.badgeOff {
+  font-size: 10px;
+  font-weight: 700;
+  background: var(--bg-card);
+  color: var(--text-dim);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 2px 7px;
+  letter-spacing: 0.05em;
+}
+
+/* iOS toggle */
+.toggle { position: relative; display: inline-block; width: 44px; height: 24px; cursor: pointer; }
+.toggle input { opacity: 0; width: 0; height: 0; }
+.slider {
+  position: absolute; inset: 0;
+  background: #cbd5e1; border-radius: 24px;
+  transition: background 0.2s;
+}
+.slider::before {
+  content: '';
+  position: absolute;
+  width: 18px; height: 18px;
+  left: 3px; top: 3px;
+  background: white;
+  border-radius: 50%;
+  transition: transform 0.2s;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.2);
+}
+.toggle input:checked + .slider { background: var(--indigo); }
+.toggle input:checked + .slider::before { transform: translateX(20px); }
+
+.autoTradeControls {
+  margin-top: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.controlLabel {
+  font-size: 12px;
+  color: var(--text-secondary);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.sliderRow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.sliderRow input[type="range"] {
+  flex: 1;
+  accent-color: var(--indigo);
+}
+
+.sliderVal {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+  min-width: 40px;
+}
+
+.autoTradeNote {
+  font-size: 11px;
+  color: var(--text-dim);
+  background: #eff6ff;
+  border: 1px solid #bfdbfe;
+  border-radius: var(--radius-sm);
+  padding: 8px 10px;
+  margin: 0;
+}
+
+/* ── Tabs ── */
+.tabs {
+  display: flex;
+  gap: 4px;
+  border-bottom: 1px solid var(--border);
+}
+
+.tab {
+  padding: 8px 16px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  cursor: pointer;
+  transition: color 0.15s;
+  margin-bottom: -1px;
+}
+
+.tabActive {
+  color: var(--indigo);
+  border-bottom-color: var(--indigo);
+  font-weight: 600;
+}
+
+/* ── Table ── */
+.tableWrap {
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  box-shadow: var(--shadow-sm);
+}
+
+.table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.table th {
+  padding: 10px 14px;
+  text-align: left;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+  background: var(--bg-card);
+  border-bottom: 1px solid var(--border);
+}
+
+.table td {
+  padding: 11px 14px;
+  border-bottom: 1px solid var(--border);
+  color: var(--text-primary);
+  font-variant-numeric: tabular-nums;
+}
+
+.table tr:last-child td { border-bottom: none; }
+.table tr:hover td { background: var(--bg-card); }
+
+.symbol { font-weight: 700; letter-spacing: 0.02em; }
+.dim    { color: var(--text-dim); font-size: 12px; }
+.subPct { font-size: 11px; color: var(--text-dim); }
+
+.green { color: #059669; }
+.red   { color: #dc2626; }
+
+.statusChip {
+  font-size: 10px;
+  font-weight: 600;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 2px 7px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.closeBtn {
+  font-size: 11px;
+  color: #dc2626;
+  background: none;
+  border: 1px solid #fca5a5;
+  border-radius: 4px;
+  padding: 3px 10px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.closeBtn:hover { background: #fef2f2; }
+
+/* ── Trade card ── */
+.tradeCard {
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 20px;
+  box-shadow: var(--shadow-sm);
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  max-width: 500px;
+}
+
+.tradeGrid {
+  display: grid;
+  grid-template-columns: 2fr 1fr 1fr;
+  gap: 12px;
+}
+
+.tradeLabel {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.tradeInput, .tradeSelect {
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  font-size: 14px;
+  font-weight: 600;
+  background: var(--bg-card);
+  color: var(--text-primary);
+  outline: none;
+  transition: border-color 0.15s;
+}
+
+.tradeInput:focus, .tradeSelect:focus { border-color: var(--indigo); }
+
+.tradeBtn {
+  padding: 12px;
+  background: var(--indigo);
+  color: white;
+  border: none;
+  border-radius: var(--radius-sm);
+  font-size: 14px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: opacity 0.15s;
+  letter-spacing: 0.02em;
+}
+.tradeBtn:hover:not(:disabled) { opacity: 0.9; }
+.tradeBtn:disabled { opacity: 0.5; cursor: not-allowed; }
+.tradeBtnSell { background: #dc2626; }
+
+.orderMsg {
+  font-size: 12px;
+  font-weight: 500;
+  padding: 8px 12px;
+  border-radius: var(--radius-sm);
+}
+.orderMsgOk  { background: #d1fae5; color: #065f46; border: 1px solid #a7f3d0; }
+.orderMsgErr { background: #fee2e2; color: #991b1b; border: 1px solid #fca5a5; }
+
+/* ── States ── */
+.empty {
+  padding: 40px;
+  text-align: center;
+  color: var(--text-dim);
+  font-size: 13px;
+}
+
+.loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  height: 200px;
+  color: var(--text-secondary);
+  font-size: 14px;
+}
+
+.spinner {
+  width: 20px;
+  height: 20px;
+  border: 2px solid var(--border);
+  border-top-color: var(--indigo);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin { to { transform: rotate(360deg); } }
+
+.error {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  height: 200px;
+  color: var(--text-secondary);
+  font-size: 14px;
+  text-align: center;
+}

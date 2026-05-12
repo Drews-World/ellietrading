@@ -19,6 +19,8 @@ from sse_starlette.sse import EventSourceResponse
 
 load_dotenv()
 
+import alpaca_client  # local module — safe to import even if alpaca-py not installed
+
 app = FastAPI(title="TradingAgents Control Center")
 
 app.add_middleware(
@@ -51,7 +53,31 @@ TRACKED_KEYS = [
     "DISCORD_WEBHOOK_URL",
     "DISCORD_BOT_TOKEN",
     "DISCORD_CHANNEL_ID",
+    "APCA_API_KEY_ID",
+    "APCA_API_SECRET_KEY",
+    "APCA_BASE_URL",
 ]
+
+# ── Alpaca auto-trade config (persisted to disk) ───────────────────────────────
+ALPACA_CONFIG_FILE = Path.home() / ".tradingagents" / "alpaca_config.json"
+
+def _load_alpaca_config() -> dict:
+    if ALPACA_CONFIG_FILE.exists():
+        try:
+            return json.loads(ALPACA_CONFIG_FILE.read_text())
+        except Exception:
+            pass
+    return {
+        "auto_trade": False,
+        "auto_trade_signals": ["BUY"],   # which signals trigger a trade
+        "position_pct": 5.0,             # % of portfolio per trade
+        "max_position_pct": 10.0,        # never exceed this % in one stock
+        "paper": True,
+    }
+
+def _save_alpaca_config(cfg: dict):
+    ALPACA_CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
+    ALPACA_CONFIG_FILE.write_text(json.dumps(cfg, indent=2))
 
 NODE_TO_AGENT = {
     "Fundamentals Analyst": "fundamentals",
@@ -219,6 +245,23 @@ class SettingsUpdate(BaseModel):
     DISCORD_WEBHOOK_URL: Optional[str] = None
     DISCORD_BOT_TOKEN: Optional[str] = None
     DISCORD_CHANNEL_ID: Optional[str] = None
+    APCA_API_KEY_ID: Optional[str] = None
+    APCA_API_SECRET_KEY: Optional[str] = None
+    APCA_BASE_URL: Optional[str] = None
+
+
+class AlpacaTradeConfig(BaseModel):
+    auto_trade: bool = False
+    auto_trade_signals: List[str] = ["BUY"]
+    position_pct: float = 5.0
+    max_position_pct: float = 10.0
+
+
+class AlpacaOrderRequest(BaseModel):
+    symbol: str
+    side: str          # "buy" or "sell"
+    qty: Optional[float] = None
+    notional: Optional[float] = None
 
 
 class DiscoverRequest(BaseModel):
@@ -1190,6 +1233,13 @@ def _run_graph(request: AnalyzeRequest, queue: asyncio.Queue, loop: asyncio.Abst
             daemon=True,
         ).start()
 
+        # Alpaca auto-trade (fire-and-forget)
+        threading.Thread(
+            target=_maybe_auto_trade,
+            args=(request.ticker, signal),
+            daemon=True,
+        ).start()
+
     except Exception as exc:
         import traceback
         asyncio.run_coroutine_threadsafe(
@@ -1219,3 +1269,100 @@ async def analyze(request: AnalyzeRequest):
 @app.get("/health")
 async def health():
     return {"status": "ok", "timestamp": datetime.utcnow().isoformat()}
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  ALPACA BROKERAGE
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _maybe_auto_trade(ticker: str, signal: str):
+    """Called after every analysis. Submits a market order if auto-trade is on."""
+    try:
+        cfg = _load_alpaca_config()
+        if not cfg.get("auto_trade"):
+            return
+        if signal not in cfg.get("auto_trade_signals", ["BUY"]):
+            return
+
+        if signal == "BUY":
+            qty = alpaca_client.calculate_position_size(ticker, cfg.get("position_pct", 5.0) / 100)
+            if qty <= 0:
+                return
+            order = alpaca_client.submit_order(ticker, "buy", qty=qty)
+            _send_discord_webhook(
+                title=f"🤖 Auto-Trade Executed — {ticker}",
+                description=f"**BUY** {qty} shares of {ticker}",
+                signal="BUY",
+                fields=[
+                    {"name": "Order ID", "value": order.get("id", "?"), "inline": True},
+                    {"name": "Status",   "value": order.get("status", "?"), "inline": True},
+                ],
+                footer="ELLIE Auto-Trader • Paper Trading" if cfg.get("paper") else "ELLIE Auto-Trader • LIVE",
+            )
+        elif signal == "SELL":
+            pos = alpaca_client.get_position(ticker)
+            if pos:
+                order = alpaca_client.close_position(ticker)
+                _send_discord_webhook(
+                    title=f"🤖 Auto-Trade Executed — {ticker}",
+                    description=f"**SELL** entire position in {ticker}",
+                    signal="SELL",
+                    footer="ELLIE Auto-Trader",
+                )
+    except Exception as e:
+        print(f"[auto-trade] error for {ticker}: {e}")
+
+
+@app.get("/alpaca/account")
+async def alpaca_account():
+    return alpaca_client.get_account()
+
+
+@app.get("/alpaca/positions")
+async def alpaca_positions():
+    return alpaca_client.get_positions()
+
+
+@app.get("/alpaca/orders")
+async def alpaca_orders(limit: int = 20):
+    return alpaca_client.get_orders(limit=limit)
+
+
+@app.post("/alpaca/order")
+async def alpaca_order(req: AlpacaOrderRequest):
+    try:
+        result = alpaca_client.submit_order(
+            symbol=req.symbol,
+            side=req.side,
+            qty=req.qty,
+            notional=req.notional,
+        )
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.delete("/alpaca/positions/{symbol}")
+async def alpaca_close_position(symbol: str):
+    try:
+        return alpaca_client.close_position(symbol)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.get("/alpaca/config")
+async def get_alpaca_config():
+    return _load_alpaca_config()
+
+
+@app.post("/alpaca/config")
+async def save_alpaca_config(data: AlpacaTradeConfig):
+    cfg = _load_alpaca_config()
+    cfg.update({
+        "auto_trade":         data.auto_trade,
+        "auto_trade_signals": data.auto_trade_signals,
+        "position_pct":       data.position_pct,
+        "max_position_pct":   data.max_position_pct,
+    })
+    _save_alpaca_config(cfg)
+    return cfg

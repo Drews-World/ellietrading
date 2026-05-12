@@ -11,6 +11,12 @@ const PROVIDER_KEY_DEFS = [
   { key: 'ALPHA_VANTAGE_API_KEY',label: 'Alpha Vantage',placeholder: '…',       doc: 'Optional. Enables premium financial data. Free tier available at alphavantage.co.' },
 ]
 
+const ALPACA_KEY_DEFS = [
+  { key: 'APCA_API_KEY_ID',     label: 'API Key ID',    placeholder: 'PKABF…',                         doc: 'Your Alpaca API key ID. Get it from app.alpaca.markets → API Keys.' },
+  { key: 'APCA_API_SECRET_KEY', label: 'Secret Key',    placeholder: 'GpD9c…',                         doc: 'Your Alpaca secret key. Only shown once when generated — save it somewhere safe.' },
+  { key: 'APCA_BASE_URL',       label: 'Endpoint',      placeholder: 'https://paper-api.alpaca.markets/v2', doc: 'Paper trading: https://paper-api.alpaca.markets/v2 — Live trading: https://api.alpaca.markets/v2' },
+]
+
 const DISCORD_KEY_DEFS = [
   { key: 'DISCORD_WEBHOOK_URL', label: 'Webhook URL',  placeholder: 'https://discord.com/api/webhooks/…', doc: 'Paste a webhook URL to get analysis results and monitor alerts sent to a Discord channel. Create one in Server Settings → Integrations → Webhooks.' },
   { key: 'DISCORD_BOT_TOKEN',   label: 'Bot Token',    placeholder: 'MTY…',  doc: 'Optional. A bot token lets you use !analyze, !portfolio, and !ask commands in Discord. Create a bot at discord.com/developers/applications.' },
@@ -199,6 +205,57 @@ export default function SettingsView() {
             onClick={handleSave}
             disabled={!dirty || saving}
           >
+            {saving ? '…Saving' : saved ? '✓ Saved' : 'Save'}
+          </button>
+          {saved && <span className={styles.savedMsg}>Keys written to .env</span>}
+        </div>
+      </div>
+
+      <div className={styles.section}>
+        <div className={styles.sectionHeader}>
+          <span className={styles.sectionIcon}>📈</span>
+          <span className={styles.sectionLabel}>Alpaca Brokerage</span>
+        </div>
+        <p className={styles.keyDoc} style={{ marginBottom: 12, padding: '0 2px' }}>
+          Connect Alpaca to view your positions, P&L, and enable auto-trading.
+          Use the paper trading endpoint while testing — switch to live when ready.
+          Get keys at <strong>app.alpaca.markets → API Keys</strong>.
+        </p>
+        <div className={styles.keyList}>
+          {ALPACA_KEY_DEFS.map(({ key, label, placeholder, doc }) => {
+            const st = status[key] || {}
+            const isSet = st.set
+            const val = form[key] ?? ''
+            const visible = show[key]
+            return (
+              <div key={key} className={styles.keyRow}>
+                <div className={styles.keyMeta}>
+                  <div className={styles.keyTop}>
+                    <span className={[styles.dot, isSet ? styles.dotGreen : styles.dotGray].join(' ')} />
+                    <span className={styles.keyLabel}>{label}</span>
+                    {isSet && <span className={styles.preview}>{st.preview}</span>}
+                    {!isSet && <span className={styles.notSet}>not set</span>}
+                  </div>
+                  <p className={styles.keyDoc}>{doc}</p>
+                </div>
+                <div className={styles.inputWrap}>
+                  <input
+                    type={visible ? 'text' : 'password'}
+                    className={styles.keyInput}
+                    value={val}
+                    placeholder={placeholder}
+                    onChange={e => { setForm(f => ({ ...f, [key]: e.target.value })); setDirty(true) }}
+                  />
+                  <button className={styles.eyeBtn} onClick={() => setShow(s => ({ ...s, [key]: !s[key] }))}>
+                    {visible ? '🙈' : '👁'}
+                  </button>
+                </div>
+              </div>
+            )
+          })}
+        </div>
+        <div className={styles.actions}>
+          <button className={styles.saveBtn} onClick={handleSave} disabled={!dirty || saving}>
             {saving ? '…Saving' : saved ? '✓ Saved' : 'Save'}
           </button>
           {saved && <span className={styles.savedMsg}>Keys written to .env</span>}

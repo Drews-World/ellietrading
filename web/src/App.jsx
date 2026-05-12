@@ -7,6 +7,7 @@ import PortfolioView from './views/PortfolioView'
 import SettingsView from './views/SettingsView'
 import MonitorView from './views/MonitorView'
 import ScoutView from './views/ScoutView'
+import BrokerageView from './views/BrokerageView'
 
 export default function App() {
   const [activeView, setActiveView] = useState('analyze')
@@ -35,6 +36,7 @@ export default function App() {
           {activeView === 'portfolio' && <PortfolioView />}
           {activeView === 'monitor'   && <MonitorView />}
           {activeView === 'scout'     && <ScoutView />}
+          {activeView === 'brokerage' && <BrokerageView />}
           {activeView === 'settings'  && <SettingsView />}
         </main>
       </div>

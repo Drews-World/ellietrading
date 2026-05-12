@@ -16,6 +16,7 @@ export default defineConfig({
       '/market-data':  'http://localhost:8000',
       '/run':          'http://localhost:8000',
       '/scout':        'http://localhost:8000',
+      '/alpaca':       'http://localhost:8000',
     },
   },
 })
