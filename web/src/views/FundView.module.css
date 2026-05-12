@@ -388,6 +388,13 @@
 }
 .resumeBtn:hover:not(:disabled) { background: #bbf7d0; }
 
+.relaunchBtn {
+  background: linear-gradient(135deg, #6366f1 0%, #14b8a6 100%);
+  color: #fff;
+  border-color: transparent;
+}
+.relaunchBtn:hover:not(:disabled) { opacity: 0.88; transform: translateY(-1px); }
+
 .reviewBtn {
   background: var(--bg-panel);
   color: var(--text-primary);

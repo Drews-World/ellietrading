@@ -136,6 +136,24 @@ export default function FundView() {
     finally { setBusy(false) }
   }
 
+  const handleRelaunch = async () => {
+    if (!window.confirm(
+      'This will run a new discovery + buy cycle without clearing your log or positions.\n\nELLIE will find new stocks and buy any with a BUY signal.\n\nContinue?'
+    )) return
+    setBusy(true)
+    try {
+      const r = await fetch('/fund/launch', { method: 'POST' })
+      const d = await r.json()
+      if (d.ok) {
+        showMsg('Relaunch initiated — ELLIE is finding new stocks.')
+        setTimeout(load, 3000)
+      } else {
+        showMsg(d.message || 'Relaunch failed', true)
+      }
+    } catch { showMsg('Network error', true) }
+    finally { setBusy(false) }
+  }
+
   const handleReview = async () => {
     setBusy(true)
     try {
@@ -384,13 +402,22 @@ export default function FundView() {
                 ⏸ Pause Fund
               </button>
             ) : (
-              <button
-                className={[styles.controlBtn, styles.resumeBtn].join(' ')}
-                onClick={handleResume}
-                disabled={busy}
-              >
-                ▶ Resume Fund
-              </button>
+              <>
+                <button
+                  className={[styles.controlBtn, styles.resumeBtn].join(' ')}
+                  onClick={handleResume}
+                  disabled={busy}
+                >
+                  ▶ Resume Fund
+                </button>
+                <button
+                  className={[styles.controlBtn, styles.relaunchBtn].join(' ')}
+                  onClick={handleRelaunch}
+                  disabled={busy}
+                >
+                  🚀 Relaunch
+                </button>
+              </>
             )}
             <button
               className={[styles.controlBtn, styles.reviewBtn].join(' ')}
