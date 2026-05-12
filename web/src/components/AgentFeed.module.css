@@ -437,3 +437,60 @@
 .deskDone .spriteImg {
   filter: drop-shadow(0 2px 4px rgba(5,150,105,0.2));
 }
+
+@media (max-width: 768px) {
+  .floor {
+    padding: 0;
+  }
+
+  .floorBody {
+    padding: 12px;
+  }
+
+  .section {
+    padding: 0;
+  }
+
+  .bottomRow {
+    flex-direction: column;
+  }
+
+  .deskRow {
+    flex-wrap: wrap;
+  }
+
+  .desk {
+    min-width: calc(50% - 4px);
+    width: auto;
+  }
+
+  .deskCompact {
+    min-width: calc(50% - 4px);
+    width: auto;
+  }
+
+  .conferenceRoom {
+    flex-direction: column;
+  }
+
+  .confTable {
+    width: 100%;
+  }
+
+  .tableLayout {
+    flex-direction: column;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .tableCenter {
+    flex-direction: row;
+  }
+
+  .tableTop,
+  .tableBottom {
+    width: 20px;
+    height: 2px;
+  }
+}

@@ -386,6 +386,39 @@
 
 @keyframes spin { to { transform: rotate(360deg); } }
 
+@media (max-width: 768px) {
+  .page {
+    padding: 12px;
+  }
+
+  .pageHeader {
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  .metricsRow {
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+  }
+
+  .tableWrap {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .table {
+    min-width: 520px;
+  }
+
+  .autoTradeControls {
+    flex-direction: column;
+  }
+
+  .tradeGrid {
+    grid-template-columns: 1fr;
+  }
+}
+
 .error {
   display: flex;
   flex-direction: column;

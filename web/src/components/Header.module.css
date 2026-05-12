@@ -102,3 +102,36 @@
   font-size: 11px;
   color: var(--text-dim);
 }
+
+@media (max-width: 768px) {
+  .header {
+    padding: 0 12px;
+  }
+
+  .version {
+    display: none;
+  }
+
+  .brandSub {
+    display: none;
+  }
+
+  .clock {
+    font-size: 11px;
+  }
+
+  .liveChip {
+    padding: 2px 8px;
+    font-size: 10px;
+  }
+}
+
+@media (max-width: 480px) {
+  .brandName {
+    font-size: 13px;
+  }
+
+  .clock {
+    display: none;
+  }
+}

@@ -69,3 +69,33 @@
   flex-shrink: 0;
   overflow-y: auto;
 }
+
+@media (max-width: 768px) {
+  .subTabs {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    flex-wrap: nowrap;
+    padding-bottom: 8px;
+  }
+
+  .subTab {
+    white-space: nowrap;
+    flex-shrink: 0;
+  }
+
+  .layout {
+    flex-direction: column;
+  }
+
+  .right {
+    width: 100%;
+  }
+
+  .rightWide {
+    width: 100%;
+  }
+
+  .analyzeContainer {
+    padding: 0;
+  }
+}

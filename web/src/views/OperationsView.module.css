@@ -143,3 +143,19 @@
   color: var(--text-primary);
   word-break: break-word;
 }
+
+@media (max-width: 768px) {
+  .page {
+    padding: 12px;
+  }
+
+  .statusBar {
+    flex-wrap: wrap;
+    gap: 8px;
+    padding: 10px 12px;
+  }
+
+  .logList {
+    max-height: 250px;
+  }
+}
