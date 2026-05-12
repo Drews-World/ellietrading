@@ -106,7 +106,7 @@ export default function BrokerageView() {
 
   const todayPnl    = account?.pnl_today ?? 0
   const todayPnlPct = account?.pnl_today_pct ?? 0
-  const isPaper     = (account?.status === 'PAPER') || (os?.environ?.APCA_BASE_URL ?? '').includes('paper')
+  const isPaper     = config?.paper !== false
 
   return (
     <div className={styles.page}>
