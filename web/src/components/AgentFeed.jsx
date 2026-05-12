@@ -76,7 +76,7 @@ const AGENTS = [
   { id: 'aggressive',       codename: 'axel',   name: 'Axel',    role: 'Risk: Aggressive',      icon: '🔥', color: '#dc2626', bg: '#fef2f2' },
   { id: 'conservative',     codename: 'cara',   name: 'Cara',    role: 'Risk: Conservative',    icon: '🛡️', color: '#7c3aed', bg: '#f5f3ff' },
   { id: 'neutral',          codename: 'niko',   name: 'Niko',    role: 'Risk: Neutral',         icon: '⚖️', color: '#2563eb', bg: '#eff6ff'  },
-  { id: 'portfolio_manager',codename: 'pm',     name: 'The PM',  role: 'Portfolio Manager',     icon: '💼', color: '#0891b2', bg: '#ecfeff' },
+  { id: 'portfolio_manager',codename: 'pm',     name: 'ELLIE',   role: 'Executive Manager',     icon: '👑', color: '#7c3aed', bg: '#f5f3ff' },
 ]
 
 const AGENT_MAP = Object.fromEntries(AGENTS.map(a => [a.id, a]))
@@ -93,7 +93,7 @@ const ACTIVITY = {
   aggressive:       { working: 'Stress-testing risk…',                 done: 'Aggressive view ready' },
   conservative:     { working: 'Evaluating downside…',                 done: 'Conservative view ready' },
   neutral:          { working: 'Balancing risk/reward…',               done: 'Neutral view ready' },
-  portfolio_manager:{ working: 'Making the final call…',               done: 'Decision delivered' },
+  portfolio_manager:{ working: 'ELLIE is making the call…',            done: 'Decision delivered' },
 }
 
 const DATA_DESK    = ['market', 'social', 'news', 'fundamentals']
@@ -173,7 +173,7 @@ export default function AgentFeed({ agents, activeAgent, statusMsg, isRunning, o
             </div>
           </FloorSection>
 
-          <FloorSection label="CEO Suite" ceo>
+          <FloorSection label="ELLIE — Executive Suite" ceo>
             {CEO_SUITE.map(id => (
               <Workstation key={id} agent={AGENT_MAP[id]} data={agents[id]}
                 ceo
