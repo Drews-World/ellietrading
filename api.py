@@ -1033,11 +1033,13 @@ def _fund_log(msg: str):
     _save_fund(fund)
 
 
-def _run_analysis_simple(ticker: str, cfg: dict):
+def _run_analysis_simple(ticker: str, cfg: dict, max_retries: int = 3):
     """
     Run TradingAgentsGraph for a single ticker using cfg's llm settings.
     Returns (signal, raw_decision, price).
+    Automatically retries on Gemini 429 RESOURCE_EXHAUSTED with backoff.
     """
+    import time
     from tradingagents.graph.trading_graph import TradingAgentsGraph
     from tradingagents.default_config import DEFAULT_CONFIG
     from tradingagents.agents.utils.agent_states import InvestDebateState, RiskDebateState
@@ -1054,45 +1056,62 @@ def _run_analysis_simple(ticker: str, cfg: dict):
         "max_risk_discuss_rounds": 1,
     })
 
-    ta = TradingAgentsGraph(debug=False, config=ta_cfg)
-    set_config(ta_cfg)
+    for attempt in range(max_retries):
+        try:
+            ta = TradingAgentsGraph(debug=False, config=ta_cfg)
+            set_config(ta_cfg)
 
-    past_context = ta.memory_log.get_past_context(ticker)
-    init_state = {
-        "messages": [("human", ticker)],
-        "company_of_interest": ticker,
-        "trade_date": date,
-        "past_context": past_context,
-        "investment_debate_state": InvestDebateState(
-            bull_history="", bear_history="", history="",
-            current_response="", judge_decision="", count=0,
-        ),
-        "risk_debate_state": RiskDebateState(
-            aggressive_history="", conservative_history="", neutral_history="",
-            history="", latest_speaker="", current_aggressive_response="",
-            current_conservative_response="", current_neutral_response="",
-            judge_decision="", count=0,
-        ),
-        "market_report": "", "fundamentals_report": "",
-        "sentiment_report": "", "news_report": "",
-    }
+            past_context = ta.memory_log.get_past_context(ticker)
+            init_state = {
+                "messages": [("human", ticker)],
+                "company_of_interest": ticker,
+                "trade_date": date,
+                "past_context": past_context,
+                "investment_debate_state": InvestDebateState(
+                    bull_history="", bear_history="", history="",
+                    current_response="", judge_decision="", count=0,
+                ),
+                "risk_debate_state": RiskDebateState(
+                    aggressive_history="", conservative_history="", neutral_history="",
+                    history="", latest_speaker="", current_aggressive_response="",
+                    current_conservative_response="", current_neutral_response="",
+                    judge_decision="", count=0,
+                ),
+                "market_report": "", "fundamentals_report": "",
+                "sentiment_report": "", "news_report": "",
+            }
 
-    final_state = None
-    for chunk in ta.graph.stream(
-        init_state, stream_mode="updates",
-        config={"recursion_limit": ta_cfg.get("max_recur_limit", 100)},
-    ):
-        for node_name, state_delta in chunk.items():
-            if node_name == "Portfolio Manager" and isinstance(state_delta, dict):
-                final_state = state_delta
+            final_state = None
+            for chunk in ta.graph.stream(
+                init_state, stream_mode="updates",
+                config={"recursion_limit": ta_cfg.get("max_recur_limit", 100)},
+            ):
+                for node_name, state_delta in chunk.items():
+                    if node_name == "Portfolio Manager" and isinstance(state_delta, dict):
+                        final_state = state_delta
 
-    if not final_state:
-        raise RuntimeError(f"No final state from graph for {ticker}")
+            if not final_state:
+                raise RuntimeError(f"No final state from graph for {ticker}")
 
-    raw_decision = final_state.get("final_trade_decision", "")
-    signal = ta.process_signal(raw_decision)
-    price = _get_current_price(ticker)
-    return signal, raw_decision, price
+            raw_decision = final_state.get("final_trade_decision", "")
+            signal = ta.process_signal(raw_decision)
+            price = _get_current_price(ticker)
+            return signal, raw_decision, price
+
+        except Exception as exc:
+            exc_str = str(exc)
+            is_rate_limit = "RESOURCE_EXHAUSTED" in exc_str or "429" in exc_str or "quota" in exc_str.lower()
+            if is_rate_limit and attempt < max_retries - 1:
+                # Parse retry delay from error if available, default to 90s
+                wait = 90
+                import re as _re
+                m = _re.search(r'retry.*?(\d+)s', exc_str, _re.IGNORECASE)
+                if m:
+                    wait = max(int(m.group(1)) + 15, 60)
+                _fund_log(f"{ticker}: rate limited (429) — waiting {wait}s before retry {attempt + 2}/{max_retries}…")
+                time.sleep(wait)
+            else:
+                raise
 
 
 def _run_fund_launch():
@@ -1121,10 +1140,15 @@ def _run_fund_launch():
         )
 
         bought = 0
-        for pick in picks[:initial_count]:
+        for i, pick in enumerate(picks[:initial_count]):
             ticker = pick.get("ticker", "").upper().strip()
             if not ticker:
                 continue
+            # Cooldown between analyses to avoid Gemini rate limits (1M tokens/min cap)
+            if i > 0:
+                import time as _time
+                _fund_log(f"Cooling down 75s before next analysis…")
+                _time.sleep(75)
             try:
                 _fund_log(f"Analyzing {ticker}…")
                 signal, raw_decision, price = _run_analysis_simple(ticker, cfg)
@@ -1208,10 +1232,15 @@ def _run_daily_review():
         portfolio_value = float(account.get("portfolio_value") or account.get("equity") or 0)
 
         decisions = []
-        for pos in positions:
+        for i, pos in enumerate(positions):
             symbol = pos.get("symbol", "")
             if not symbol:
                 continue
+            # Cooldown between analyses to avoid Gemini rate limits
+            if i > 0:
+                import time as _time
+                _fund_log(f"Cooling down 75s before analyzing {symbol}…")
+                _time.sleep(75)
             try:
                 signal, raw_decision, price = _run_analysis_simple(symbol, cfg)
                 market_value = float(pos.get("market_value") or 0)
@@ -1314,7 +1343,7 @@ def _run_weekly_report():
                     "high growth momentum stocks",
                     3,
                 )
-                for pick in new_picks:
+                for j, pick in enumerate(new_picks):
                     ticker = pick.get("ticker", "").upper().strip()
                     if not ticker:
                         continue
@@ -1322,6 +1351,10 @@ def _run_weekly_report():
                     held_symbols = {p.get("symbol", "") for p in positions}
                     if ticker in held_symbols:
                         continue
+                    if j > 0:
+                        import time as _time
+                        _fund_log(f"Cooling down 75s before analyzing {ticker}…")
+                        _time.sleep(75)
                     signal, raw_decision, price = _run_analysis_simple(ticker, cfg)
                     if signal in ("Buy", "Overweight"):
                         qty = alpaca_client.calculate_position_size(
