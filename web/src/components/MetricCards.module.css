@@ -1,0 +1,104 @@
+.grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.card {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.rangeCard {
+  grid-column: 1 / -1;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.metaLabel {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+
+.metaVal {
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+}
+
+.metaSub {
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+.valGreen  { color: var(--green); }
+.valRed    { color: var(--red); }
+.valYellow { color: var(--yellow); }
+
+/* 52-week range bar */
+.rangeWrap {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.rangeLow, .rangeHigh {
+  font-size: 10px;
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  white-space: nowrap;
+}
+
+.rangeBar {
+  flex: 1;
+  height: 6px;
+  background: var(--border);
+  border-radius: 6px;
+  overflow: visible;
+  position: relative;
+}
+
+.rangeFill {
+  height: 100%;
+  background: linear-gradient(90deg, var(--red-border), var(--yellow), var(--green));
+  border-radius: 6px;
+  position: relative;
+}
+
+.rangeThumb {
+  position: absolute;
+  right: -5px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  border: 2px solid white;
+  box-shadow: 0 1px 3px rgba(0,0,0,.2);
+}
+.thumbLow  { background: var(--red); }
+.thumbMid  { background: var(--yellow); }
+.thumbHigh { background: var(--green); }
+
+.currentLabel {
+  font-size: 11px;
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  text-align: right;
+}
+
+.rangeEmpty { font-size: 13px; color: var(--text-dim); }

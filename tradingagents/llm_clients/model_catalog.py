@@ -101,6 +101,18 @@ MODEL_OPTIONS: ProviderModeOptions = {
             ("Custom model ID", "custom"),
         ],
     },
+    "groq": {
+        "quick": [
+            ("Llama 3.3 70B - Best balance of speed and intelligence", "llama-3.3-70b-versatile"),
+            ("Llama 3.1 8B - Fastest, ultra-low latency", "llama-3.1-8b-instant"),
+            ("Gemma 2 9B - Lightweight and fast", "gemma2-9b-it"),
+        ],
+        "deep": [
+            ("Llama 3.3 70B - Best balance of speed and intelligence", "llama-3.3-70b-versatile"),
+            ("DeepSeek R1 Distill Llama 70B - Reasoning model", "deepseek-r1-distill-llama-70b"),
+            ("Llama 3.1 70B - Versatile large model", "llama-3.1-70b-versatile"),
+        ],
+    },
     # OpenRouter: fetched dynamically. Azure: any deployed model name.
     "ollama": {
         "quick": [

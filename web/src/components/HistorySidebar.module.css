@@ -1,0 +1,115 @@
+.sidebar {
+  width: 200px;
+  flex-shrink: 0;
+  background: var(--bg-panel);
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border-dim);
+  flex-shrink: 0;
+}
+
+.label {
+  font-size: 10px;
+  letter-spacing: 0.15em;
+  color: var(--cyan);
+  text-transform: uppercase;
+}
+
+.clearBtn {
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: 2px;
+  color: var(--text-dim);
+  font-size: 9px;
+  letter-spacing: 0.1em;
+  padding: 2px 6px;
+  cursor: pointer;
+  transition: color 0.15s, border-color 0.15s;
+}
+
+.clearBtn:hover {
+  color: var(--red);
+  border-color: var(--red);
+}
+
+.list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.empty {
+  color: var(--text-dim);
+  font-size: 11px;
+  padding: 12px 4px;
+  text-align: center;
+}
+
+.entry {
+  background: var(--bg-card);
+  border: 1px solid var(--border-dim);
+  border-radius: 3px;
+  padding: 8px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  cursor: default;
+  transition: border-color 0.15s;
+}
+
+.entry:hover { border-color: var(--border); }
+
+.entryTop {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.ticker {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-primary);
+  letter-spacing: 0.05em;
+}
+
+.signal {
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  padding: 2px 5px;
+  border-radius: 2px;
+}
+
+.signal_green  { color: var(--green);  background: var(--green-glow); }
+.signal_red    { color: var(--red);    background: var(--red-glow); }
+.signal_yellow { color: var(--yellow); background: var(--yellow-glow); }
+.signal_cyan   { color: var(--cyan);   background: var(--cyan-glow); }
+
+.entryBottom {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 4px;
+}
+
+.tradeDate {
+  font-size: 10px;
+  color: var(--text-secondary);
+}
+
+.ts {
+  font-size: 9px;
+  color: var(--text-dim);
+}

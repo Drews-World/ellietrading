@@ -1,0 +1,87 @@
+.wrap {
+  border-radius: var(--radius-md);
+  border: 1.5px solid;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.wrap_green  { background: var(--green-light);  border-color: var(--green-border); }
+.wrap_yellow { background: var(--yellow-light); border-color: var(--yellow-border); }
+.wrap_red    { background: var(--red-light);    border-color: var(--red-border); }
+
+.top { display: flex; flex-direction: column; gap: 12px; }
+
+.signalBlock {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.glyph {
+  font-size: 36px;
+  line-height: 1;
+  font-weight: 900;
+}
+.glyph_green  { color: var(--green); }
+.glyph_yellow { color: var(--yellow); }
+.glyph_red    { color: var(--red); }
+
+.signalLabel {
+  font-size: 26px;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  line-height: 1;
+}
+.label_green  { color: var(--green); }
+.label_yellow { color: var(--yellow); }
+.label_red    { color: var(--red); }
+
+.entryPrice {
+  font-size: 12px;
+  color: var(--text-secondary);
+  margin-top: 2px;
+  font-family: var(--font-mono);
+}
+
+.sections { display: flex; flex-direction: column; gap: 8px; }
+
+.infoRow {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+}
+.infoIcon { font-size: 13px; flex-shrink: 0; margin-top: 1px; }
+.infoTitle { font-size: 12px; font-weight: 600; color: var(--text-primary); }
+.infoText  { font-size: 12px; color: var(--text-secondary); line-height: 1.5; }
+
+/* Risk bar */
+.riskRow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding-top: 4px;
+  border-top: 1px solid rgba(0,0,0,.06);
+}
+.riskLabel {
+  font-size: 11px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  font-weight: 500;
+}
+.riskBar {
+  flex: 1;
+  height: 5px;
+  background: rgba(0,0,0,.08);
+  border-radius: 5px;
+  overflow: hidden;
+}
+.riskFill {
+  height: 100%;
+  border-radius: 5px;
+  transition: width 0.6s ease;
+}
+.riskHigh { background: var(--red);    color: var(--red); }
+.riskMed  { background: var(--yellow); color: var(--yellow); }
+.riskLow  { background: var(--green);  color: var(--green); }
+.riskLevel { font-size: 11px; font-weight: 700; white-space: nowrap; }

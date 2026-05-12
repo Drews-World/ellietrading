@@ -1,4 +1,13 @@
-# Byte-compiled / optimized / DLL files
+# ── ELLIE Trading — project-specific ignores ────────────────
+.DS_Store
+.claude/
+# 587MB sprite assets — place in web/public/spriteassets/ locally, not in git
+web/public/spriteassets/
+# Built output and deps
+web/dist/
+web/node_modules/
+
+# ── Byte-compiled / optimized / DLL files ───────────────────
 __pycache__/
 *.py[codz]
 *$py.class

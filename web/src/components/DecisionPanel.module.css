@@ -1,0 +1,112 @@
+.panel {
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-sm);
+}
+
+.panelHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 18px 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.panelLeft { display: flex; align-items: center; gap: 8px; }
+.panelIcon { font-size: 16px; }
+.panelTitle { font-size: 14px; font-weight: 600; color: var(--text-primary); }
+
+.meta {
+  font-size: 12px;
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+}
+
+.body {
+  padding: 20px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.signal {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 18px 22px;
+  border-radius: var(--radius-md);
+  border-width: 1.5px;
+  border-style: solid;
+}
+
+.signal_green  { background: var(--green-light);  border-color: var(--green-border); }
+.signal_red    { background: var(--red-light);    border-color: var(--red-border); }
+.signal_yellow { background: var(--yellow-light); border-color: var(--yellow-border); }
+.signal_indigo { background: var(--indigo-light); border-color: #c7d2fe; }
+
+.glyph { font-size: 28px; line-height: 1; }
+
+.signalLabel {
+  font-size: 28px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+}
+
+.signal_green  .signalLabel { color: var(--green); }
+.signal_red    .signalLabel { color: var(--red); }
+.signal_yellow .signalLabel { color: var(--yellow); }
+.signal_indigo .signalLabel { color: var(--indigo); }
+
+.signalSub {
+  font-size: 12px;
+  color: var(--text-secondary);
+  margin-top: 2px;
+}
+
+.reasoning { display: flex; flex-direction: column; gap: 10px; }
+
+.toggleBtn {
+  background: var(--bg-card);
+  border: 1.5px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+  font-family: var(--font);
+  font-size: 12px;
+  font-weight: 500;
+  padding: 7px 14px;
+  cursor: pointer;
+  align-self: flex-start;
+  transition: border-color 0.15s, color 0.15s, background 0.15s;
+}
+
+.toggleBtn:hover {
+  border-color: var(--indigo);
+  color: var(--indigo);
+  background: var(--indigo-light);
+}
+
+.reasoningText {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.8;
+  color: var(--text-secondary);
+  white-space: pre-wrap;
+  word-break: break-word;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 16px;
+  max-height: 400px;
+  overflow-y: auto;
+}
+
+.errorBody { padding: 20px; }
+
+.errorText {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--red);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
