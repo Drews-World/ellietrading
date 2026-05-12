@@ -997,7 +997,7 @@ def _run_scout_cycle():
                 signal = ta.process_signal(raw)
                 price = _get_current_price(ticker)
                 run_id = str(uuid.uuid4())
-                now_iso = datetime.utcnow().isoformat()
+                now_iso = datetime.utcnow().isoformat() + "Z"
 
                 # Always persist to portfolio
                 runs = _load_portfolio()
@@ -1071,7 +1071,7 @@ _fund_executor = concurrent.futures.ThreadPoolExecutor(max_workers=2, thread_nam
 def _fund_log(msg: str):
     """Append a timestamped log entry to the fund state, capped at 200 entries."""
     fund = _load_fund()
-    entry = {"ts": datetime.utcnow().isoformat(), "msg": msg}
+    entry = {"ts": datetime.utcnow().isoformat() + "Z", "msg": msg}
     fund.setdefault("log", []).insert(0, entry)
     fund["log"] = fund["log"][:200]
     _save_fund(fund)
@@ -1086,7 +1086,7 @@ def _log_portfolio_action(ticker: str, action: str, qty, price, signal: str, rea
         except Exception:
             pass
     entry = {
-        "ts": datetime.utcnow().isoformat(),
+        "ts": datetime.utcnow().isoformat() + "Z",
         "ticker": ticker,
         "action": action,       # "BUY", "SELL", "ADD", "HOLD"
         "qty": qty,
@@ -1188,7 +1188,7 @@ def _run_fund_launch():
         cfg = fund["config"]
 
         fund["active"] = True
-        fund["launched_at"] = datetime.utcnow().isoformat()
+        fund["launched_at"] = datetime.utcnow().isoformat() + "Z"
         _save_fund(fund)
         _fund_log("Fund launch started")
 
@@ -1519,7 +1519,7 @@ async def update_scout_config(data: ScoutConfig):
     scout = _load_scout()
     scout["config"] = data.model_dump()
     if data.enabled and not scout.get("next_run"):
-        scout["next_run"] = datetime.utcnow().isoformat()
+        scout["next_run"] = datetime.utcnow().isoformat() + "Z"
     _save_scout(scout)
     return scout
 
@@ -1562,7 +1562,7 @@ async def create_monitor(data: MonitorCreate):
         "quick_think_llm": data.quick_think_llm,
         "interval_hours": data.interval_hours,
         "last_checked_at": None,
-        "next_check_at":  datetime.utcnow().isoformat(),  # run immediately
+        "next_check_at":  datetime.utcnow().isoformat() + "Z",  # run immediately
         "last_signal":    None,
         "last_price":     None,
         "is_running":     False,
@@ -1725,7 +1725,7 @@ def _run_graph(request: AnalyzeRequest, queue: asyncio.Queue, loop: asyncio.Abst
             "signal": signal,
             "reasoning": raw_decision,
             "entry_price": entry_price,
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": datetime.utcnow().isoformat() + "Z",
             "provider": request.llm_provider,
             "deep_model": request.deep_think_llm,
         }
@@ -1786,7 +1786,7 @@ async def analyze(request: AnalyzeRequest):
 
 @app.get("/health")
 async def health():
-    return {"status": "ok", "timestamp": datetime.utcnow().isoformat()}
+    return {"status": "ok", "timestamp": datetime.utcnow().isoformat() + "Z"}
 
 
 # ══════════════════════════════════════════════════════════════════════════════
