@@ -429,6 +429,7 @@ def _send_discord_webhook(title: str, description: str, signal: str = "", fields
     """POST a rich embed to the configured Discord webhook. Fire-and-forget."""
     webhook_url = os.environ.get("DISCORD_WEBHOOK_URL", "").strip()
     if not webhook_url:
+        _fund_log("Discord: DISCORD_WEBHOOK_URL not set — skipping notification")
         return
     import urllib.request as ur
     color = SIGNAL_COLOR.get(signal, 5793266)
@@ -441,8 +442,9 @@ def _send_discord_webhook(title: str, description: str, signal: str = "", fields
     try:
         req = ur.Request(webhook_url, data=payload, headers={"Content-Type": "application/json"}, method="POST")
         ur.urlopen(req, timeout=10)
-    except Exception:
-        pass
+        _fund_log(f"Discord: sent '{title}'")
+    except Exception as e:
+        _fund_log(f"Discord: send failed — {e}")
 
 
 def _discord_analysis_embed(ticker: str, signal: str, entry_price, reasoning: str, provider: str, date: str):
