@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef, useCallback } from 'react'
 import styles from './SettingsView.module.css'
 
 const PROVIDER_KEY_DEFS = [
@@ -282,6 +282,117 @@ export default function SettingsView() {
           <p>TradingAgents v0.2.4 · Multi-agent LLM financial analysis framework by <a href="https://github.com/TauricResearch" target="_blank" rel="noreferrer">Tauric Research</a></p>
           <p>Web UI built on FastAPI + React/Vite. Agents run locally on your machine. Your API keys are used only to call the respective LLM providers.</p>
         </div>
+      </div>
+
+      <LogsPanel />
+    </div>
+  )
+}
+
+function LogsPanel() {
+  const [logs, setLogs] = useState([])
+  const [filter, setFilter] = useState('ALL')   // ALL | ERROR | WARN
+  const [search, setSearch] = useState('')
+  const [loading, setLoading] = useState(true)
+  const [autoRefresh, setAutoRefresh] = useState(true)
+  const bottomRef = useRef(null)
+
+  const load = useCallback(async (silent = false) => {
+    if (!silent) setLoading(true)
+    try {
+      const r = await fetch('/logs?n=500')
+      if (r.ok) setLogs(await r.json())
+    } catch { /* ignore */ } finally {
+      setLoading(false)
+    }
+  }, [])
+
+  useEffect(() => {
+    load()
+  }, [load])
+
+  useEffect(() => {
+    if (!autoRefresh) return
+    const iv = setInterval(() => load(true), 8000)
+    return () => clearInterval(iv)
+  }, [autoRefresh, load])
+
+  const levelClass = (level) => {
+    if (level === 'ERROR' || level === 'CRITICAL') return styles.logError
+    if (level === 'WARNING') return styles.logWarn
+    return styles.logInfo
+  }
+
+  const formatTs = (ts) => {
+    if (!ts) return ''
+    try {
+      return new Date(ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+    } catch { return ts.slice(11, 19) }
+  }
+
+  const visible = logs.filter(e => {
+    if (filter === 'ERROR' && e.level !== 'ERROR' && e.level !== 'CRITICAL') return false
+    if (filter === 'WARN' && e.level !== 'WARNING' && e.level !== 'ERROR' && e.level !== 'CRITICAL') return false
+    if (search && !e.msg?.toLowerCase().includes(search.toLowerCase()) && !e.src?.toLowerCase().includes(search.toLowerCase())) return false
+    return true
+  })
+
+  return (
+    <div className={styles.section}>
+      <div className={styles.sectionHeader}>
+        <span className={styles.sectionIcon}>📋</span>
+        <span className={styles.sectionLabel}>Application Logs</span>
+      </div>
+
+      <div className={styles.logToolbar}>
+        <div className={styles.logFilters}>
+          {['ALL', 'WARN', 'ERROR'].map(f => (
+            <button
+              key={f}
+              className={[styles.filterBtn, filter === f && styles.filterActive].filter(Boolean).join(' ')}
+              onClick={() => setFilter(f)}
+            >
+              {f}
+            </button>
+          ))}
+        </div>
+        <input
+          className={styles.logSearch}
+          placeholder="Search…"
+          value={search}
+          onChange={e => setSearch(e.target.value)}
+        />
+        <button
+          className={[styles.filterBtn, autoRefresh && styles.filterActive].filter(Boolean).join(' ')}
+          onClick={() => setAutoRefresh(a => !a)}
+          title="Auto-refresh every 8s"
+        >
+          {autoRefresh ? '⏵ Live' : '⏸ Paused'}
+        </button>
+        <button className={styles.filterBtn} onClick={() => load()}>↻</button>
+      </div>
+
+      <div className={styles.logBox}>
+        {loading && logs.length === 0 ? (
+          <div className={styles.logEmpty}>Loading…</div>
+        ) : visible.length === 0 ? (
+          <div className={styles.logEmpty}>No log entries{search ? ' matching search' : ''}.</div>
+        ) : (
+          visible.map((e, i) => (
+            <div key={i} className={[styles.logRow, levelClass(e.level)].join(' ')}>
+              <span className={styles.logTs}>{formatTs(e.ts)}</span>
+              <span className={styles.logLevel}>{(e.level || 'INFO').slice(0, 4)}</span>
+              {e.src && e.src !== 'ellie' && <span className={styles.logSrc}>{e.src}</span>}
+              <span className={styles.logMsg}>{e.msg}</span>
+            </div>
+          ))
+        )}
+        <div ref={bottomRef} />
+      </div>
+
+      <div className={styles.logFooter}>
+        {visible.length} of {logs.length} entries
+        {autoRefresh && <span className={styles.logLive}> · live</span>}
       </div>
     </div>
   )

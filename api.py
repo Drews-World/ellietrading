@@ -3,6 +3,8 @@
 import asyncio
 import concurrent.futures
 import json
+import logging
+import logging.handlers
 import os
 import re
 import threading
@@ -40,6 +42,26 @@ SCOUT_FILE     = Path.home() / ".tradingagents" / "ui_scout.json"
 FUND_FILE      = Path.home() / ".tradingagents" / "fund_state.json"
 PORTFOLIO_HISTORY_FILE = Path.home() / ".tradingagents" / "portfolio_history.json"
 PORTFOLIO_FILE.parent.mkdir(parents=True, exist_ok=True)
+APP_LOG_FILE = Path.home() / ".tradingagents" / "app.log"
+
+# ── App logger ────────────────────────────────────────────────────────────────
+class _JsonLogFormatter(logging.Formatter):
+    def format(self, record):
+        return json.dumps({
+            "ts":    datetime.utcnow().isoformat() + "Z",
+            "level": record.levelname,
+            "src":   record.name,
+            "msg":   record.getMessage(),
+        })
+
+_app_logger = logging.getLogger("ellie")
+_app_logger.setLevel(logging.DEBUG)
+_app_logger.propagate = False
+_log_handler = logging.handlers.RotatingFileHandler(
+    APP_LOG_FILE, maxBytes=3_000_000, backupCount=2, encoding="utf-8"
+)
+_log_handler.setFormatter(_JsonLogFormatter())
+_app_logger.addHandler(_log_handler)
 
 _monitor_executor = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix="monitor")
 
@@ -448,6 +470,7 @@ def _send_discord_webhook(title: str, description: str, signal: str = "", fields
         ur.urlopen(req, timeout=10)
         _fund_log(f"Discord: sent '{title}'")
     except Exception as e:
+        _app_logger.error(f"[discord] send failed — {e}")
         _fund_log(f"Discord: send failed — {e}")
 
 
@@ -455,7 +478,9 @@ def _send_discord_webhook(title: str, description: str, signal: str = "", fields
 async def discord_test():
     """Send a test message to the configured Discord webhook."""
     webhook_url = os.environ.get("DISCORD_WEBHOOK_URL", "").strip()
+    _app_logger.info(f"[discord] test requested, webhook configured: {bool(webhook_url)}")
     if not webhook_url:
+        _app_logger.error("[discord] test failed — DISCORD_WEBHOOK_URL not set")
         raise HTTPException(status_code=400, detail="DISCORD_WEBHOOK_URL not configured")
     import urllib.request as ur
     payload = json.dumps({
@@ -471,8 +496,10 @@ async def discord_test():
             "User-Agent": "DiscordBot (https://github.com, 1.0)",
         }, method="POST")
         ur.urlopen(req, timeout=10)
+        _app_logger.info("[discord] test message sent OK")
         return {"ok": True}
     except Exception as e:
+        _app_logger.error(f"[discord] test failed — {e}")
         raise HTTPException(status_code=502, detail=str(e))
 
 
@@ -1098,6 +1125,7 @@ _fund_executor = concurrent.futures.ThreadPoolExecutor(max_workers=2, thread_nam
 
 def _fund_log(msg: str):
     """Append a timestamped log entry to the fund state, capped at 200 entries."""
+    _app_logger.info(f"[fund] {msg}")
     fund = _load_fund()
     entry = {"ts": datetime.utcnow().isoformat() + "Z", "msg": msg}
     fund.setdefault("log", []).insert(0, entry)
@@ -2054,6 +2082,29 @@ async def get_fund_log():
     """Return the fund activity log."""
     fund = _load_fund()
     return fund.get("log", [])
+
+
+@app.get("/logs")
+async def get_logs(n: int = 500):
+    """Return the last N app log entries from the rotating log file."""
+    if not APP_LOG_FILE.exists():
+        return []
+    try:
+        lines = APP_LOG_FILE.read_text(encoding="utf-8").splitlines()
+        # Keep last N lines, newest first
+        tail = lines[-n:] if len(lines) > n else lines
+        entries = []
+        for line in reversed(tail):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                entries.append(json.loads(line))
+            except Exception:
+                entries.append({"ts": "", "level": "INFO", "src": "app", "msg": line})
+        return entries
+    except Exception as exc:
+        return [{"ts": datetime.utcnow().isoformat() + "Z", "level": "ERROR", "src": "api", "msg": f"Could not read log file: {exc}"}]
 
 
 @app.get("/portfolio/history")

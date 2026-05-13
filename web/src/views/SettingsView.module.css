@@ -240,6 +240,132 @@
 .about p { font-size: 13px; color: var(--text-secondary); line-height: 1.7; }
 .about a  { color: var(--indigo); }
 
+/* ── Logs panel ────────────────────────────────────────────────────────────── */
+.logToolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--border);
+  flex-wrap: wrap;
+}
+
+.logFilters {
+  display: flex;
+  gap: 4px;
+}
+
+.filterBtn {
+  background: var(--bg-card);
+  border: 1.5px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+  font-family: var(--font);
+  font-size: 11px;
+  font-weight: 600;
+  padding: 5px 10px;
+  cursor: pointer;
+  letter-spacing: 0.03em;
+  transition: border-color 0.15s, color 0.15s, background 0.15s;
+}
+.filterBtn:hover { border-color: var(--indigo); color: var(--indigo); }
+.filterActive {
+  background: var(--indigo-light);
+  border-color: var(--indigo);
+  color: var(--indigo);
+}
+
+.logSearch {
+  flex: 1;
+  min-width: 120px;
+  background: var(--bg-card);
+  border: 1.5px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  padding: 5px 10px;
+  outline: none;
+}
+.logSearch:focus { border-color: var(--indigo); }
+
+.logBox {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.6;
+  background: var(--bg-card);
+  max-height: 460px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+}
+
+.logEmpty {
+  padding: 24px;
+  color: var(--text-dim);
+  text-align: center;
+  font-family: var(--font);
+  font-size: 13px;
+}
+
+.logRow {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 3px 14px;
+  border-bottom: 1px solid var(--border-dim);
+  min-height: 24px;
+}
+.logRow:last-child { border-bottom: none; }
+.logRow:hover { background: var(--bg-hover); }
+
+.logTs {
+  color: var(--text-dim);
+  flex-shrink: 0;
+  font-size: 11px;
+  min-width: 68px;
+}
+.logLevel {
+  flex-shrink: 0;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  min-width: 32px;
+  opacity: 0.7;
+}
+.logSrc {
+  flex-shrink: 0;
+  font-size: 10px;
+  color: var(--indigo);
+  opacity: 0.8;
+  min-width: 52px;
+}
+.logMsg {
+  color: var(--text-primary);
+  word-break: break-all;
+  flex: 1;
+}
+
+.logInfo  { color: var(--text-primary); }
+.logWarn  { background: color-mix(in srgb, var(--yellow) 6%, transparent); }
+.logWarn .logLevel  { color: var(--yellow); opacity: 1; }
+.logError { background: color-mix(in srgb, var(--red) 6%, transparent); }
+.logError .logLevel { color: var(--red); opacity: 1; }
+.logError .logMsg   { color: var(--red); }
+
+.logFooter {
+  padding: 6px 16px;
+  font-size: 11px;
+  color: var(--text-dim);
+  border-top: 1px solid var(--border);
+  background: var(--bg-card);
+}
+
+.logLive {
+  color: var(--green);
+  font-weight: 600;
+}
+
 @media (max-width: 768px) {
   .wrap {
     padding: 12px;
