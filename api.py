@@ -451,6 +451,31 @@ def _send_discord_webhook(title: str, description: str, signal: str = "", fields
         _fund_log(f"Discord: send failed — {e}")
 
 
+@app.post("/discord/test")
+async def discord_test():
+    """Send a test message to the configured Discord webhook."""
+    webhook_url = os.environ.get("DISCORD_WEBHOOK_URL", "").strip()
+    if not webhook_url:
+        raise HTTPException(status_code=400, detail="DISCORD_WEBHOOK_URL not configured")
+    import urllib.request as ur
+    payload = json.dumps({
+        "embeds": [{
+            "title": "✅ ELLIE — Discord Connected",
+            "description": "Notifications are working. Signal changes, fund reviews, and weekly reports will appear here.",
+            "color": 5763719,
+        }]
+    }).encode()
+    try:
+        req = ur.Request(webhook_url, data=payload, headers={
+            "Content-Type": "application/json",
+            "User-Agent": "DiscordBot (https://github.com, 1.0)",
+        }, method="POST")
+        ur.urlopen(req, timeout=10)
+        return {"ok": True}
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+
 def _discord_analysis_embed(ticker: str, signal: str, entry_price, reasoning: str, provider: str, date: str):
     emoji = SIGNAL_EMOJI.get(signal, "⬜")
     plain = SIGNAL_PLAIN.get(signal, signal)

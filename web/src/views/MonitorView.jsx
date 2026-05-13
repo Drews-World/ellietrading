@@ -161,6 +161,9 @@ function FundAutomations({ fund, onRunReview }) {
 export default function MonitorView() {
   const [data, setData] = useState({ monitors: [], alerts: [] })
   const [fund, setFund] = useState(null)
+  const [discordConfigured, setDiscordConfigured] = useState(null)
+  const [testing, setTesting] = useState(false)
+  const [testResult, setTestResult] = useState(null) // 'ok' | 'fail'
   const [loading, setLoading] = useState(true)
   const [showForm, setShowForm] = useState(false)
   const [form, setForm] = useState({
@@ -173,27 +176,22 @@ export default function MonitorView() {
   const [adding, setAdding] = useState(false)
   const [running, setRunning] = useState({})
   const prevAlertIds = useRef(new Set())
-  const notifPerm = useRef(typeof Notification !== 'undefined' ? Notification.permission : 'denied')
 
   const load = useCallback(async (silent = false) => {
     if (!silent) setLoading(true)
     try {
-      const [monRes, fundRes] = await Promise.all([
+      const [monRes, fundRes, settingsRes] = await Promise.all([
         fetch('/monitor'),
         fetch('/fund'),
+        fetch('/settings'),
       ])
       const d = await monRes.json()
       const f = await fundRes.json()
-
-      if (notifPerm.current === 'granted') {
-        const newAlerts = (d.alerts || []).filter(a => !a.read && !prevAlertIds.current.has(a.id))
-        for (const alert of newAlerts) {
-          new Notification(`TradingAgents: ${alert.ticker}`, { body: alert.message })
-        }
-      }
+      const s = await settingsRes.json()
       prevAlertIds.current = new Set((d.alerts || []).map(a => a.id))
       setData(d)
       setFund(f)
+      setDiscordConfigured(s?.DISCORD_WEBHOOK_URL?.set ?? false)
     } catch { /* ignore */ } finally {
       setLoading(false)
     }
@@ -205,10 +203,18 @@ export default function MonitorView() {
     return () => clearInterval(iv)
   }, [load])
 
-  const requestNotif = async () => {
-    if (typeof Notification === 'undefined') return
-    const perm = await Notification.requestPermission()
-    notifPerm.current = perm
+  const handleTestDiscord = async () => {
+    setTesting(true)
+    setTestResult(null)
+    try {
+      const r = await fetch('/discord/test', { method: 'POST' })
+      setTestResult(r.ok ? 'ok' : 'fail')
+    } catch {
+      setTestResult('fail')
+    } finally {
+      setTesting(false)
+      setTimeout(() => setTestResult(null), 4000)
+    }
   }
 
   const handleAdd = async () => {
@@ -261,11 +267,17 @@ export default function MonitorView() {
           </p>
         </div>
         <div className={styles.headerActions}>
-          {notifPerm.current !== 'granted' && (
-            <button className={styles.notifBtn} onClick={requestNotif}>
-              🔔 Enable Notifications
+          {discordConfigured === false ? (
+            <span className={styles.discordOff}>⚠ No Discord webhook — configure in Settings</span>
+          ) : discordConfigured === true ? (
+            <button
+              className={testResult === 'ok' ? styles.discordOk : testResult === 'fail' ? styles.discordFail : styles.discordBtn}
+              onClick={handleTestDiscord}
+              disabled={testing}
+            >
+              {testing ? 'Sending…' : testResult === 'ok' ? '✓ Sent' : testResult === 'fail' ? '✕ Failed' : '● Discord · Test'}
             </button>
-          )}
+          ) : null}
           <button className={styles.addBtn} onClick={() => setShowForm(s => !s)}>
             {showForm ? '✕ Cancel' : '+ Watch Ticker'}
           </button>
