@@ -187,7 +187,7 @@ server {
     }
 
     # ── API proxy — FastAPI backend on localhost:8000 ──────────────────────
-    location ~ ^/(analyze|portfolio|settings|market-data|discover|monitor|scout|run|alpaca|health|fund|discord|logs) {
+    location ~ ^/(analyze|portfolio|settings|market-data|discover|monitor|scout|run|alpaca|health|fund|discord|logs|preview) {
         proxy_pass         http://127.0.0.1:8000;
         proxy_http_version 1.1;
 

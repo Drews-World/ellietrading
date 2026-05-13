@@ -91,14 +91,14 @@ function FundAutomations({ fund, onRunReview }) {
         <p className={styles.empty}>Fund is not active — launch the fund from the Fund tab to enable automated monitoring.</p>
       ) : (
         <div className={styles.scheduleGrid}>
-          {/* Daily Review */}
+          {/* Daily Snapshot */}
           <div className={styles.scheduleCard}>
-            <span className={styles.scheduleLabel}>DAILY REVIEW</span>
+            <span className={styles.scheduleLabel}>DAILY SNAPSHOT</span>
             <span className={styles.scheduleCountdown}>
               {countdown(fund?.next_daily_review)}
             </span>
             <div className={styles.scheduleMeta}>
-              <span>Re-analyzes all positions. Sells weak signals, adds to strong ones.</span>
+              <span>Portfolio P&amp;L snapshot sent to Discord at market close. No AI, no trades.</span>
             </div>
             <div className={styles.scheduleTimes}>
               <span>Last: {timeAgo(fund?.last_daily_review)}</span>
@@ -113,6 +113,23 @@ function FundAutomations({ fund, onRunReview }) {
             >
               {reviewing ? 'Running…' : '▶ Run Now'}
             </button>
+          </div>
+
+          {/* Bi-Weekly Analysis */}
+          <div className={styles.scheduleCard}>
+            <span className={styles.scheduleLabel}>BI-WEEKLY ANALYSIS</span>
+            <span className={styles.scheduleCountdown}>
+              {countdown(fund?.next_biweekly_analysis)}
+            </span>
+            <div className={styles.scheduleMeta}>
+              <span>AI reviews every held position. Sells weak signals, adds to strong ones. Respects the {fund?.config?.min_hold_days ?? 14}-day hold minimum.</span>
+            </div>
+            <div className={styles.scheduleTimes}>
+              <span>Last: {timeAgo(fund?.last_biweekly_analysis)}</span>
+              <span>Next: {fund?.next_biweekly_analysis
+                ? new Date(fund.next_biweekly_analysis).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
+                : '—'}</span>
+            </div>
           </div>
 
           {/* Weekly Report */}
@@ -138,19 +155,6 @@ function FundAutomations({ fund, onRunReview }) {
                 Will discover &amp; buy 1 new position alongside the report.
               </div>
             )}
-          </div>
-
-          {/* Scheduler health */}
-          <div className={styles.scheduleCard}>
-            <span className={styles.scheduleLabel}>SCHEDULER</span>
-            <span className={[styles.scheduleCountdown, styles.schedulerOk].join(' ')}>Active</span>
-            <div className={styles.scheduleMeta}>
-              <span>Checks every 5 minutes. Runs reviews and reports when their timer expires.</span>
-            </div>
-            <div className={styles.scheduleTimes}>
-              <span>Daily review interval: 24h</span>
-              <span>Weekly report: Sundays UTC</span>
-            </div>
           </div>
         </div>
       )}

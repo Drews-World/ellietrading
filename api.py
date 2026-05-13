@@ -80,6 +80,7 @@ TRACKED_KEYS = [
     "APCA_API_KEY_ID",
     "APCA_API_SECRET_KEY",
     "APCA_BASE_URL",
+    "SITE_PASSWORD",
 ]
 
 # ── Alpaca auto-trade config (persisted to disk) ───────────────────────────────
@@ -201,6 +202,8 @@ def _load_fund() -> dict:
         "launched_at": None,
         "last_daily_review": None,
         "next_daily_review": None,
+        "last_biweekly_analysis": None,
+        "next_biweekly_analysis": None,
         "last_weekly_report": None,
         "next_weekly_report": None,
         "config": {
@@ -211,6 +214,7 @@ def _load_fund() -> dict:
             "position_pct": 5.0,
             "max_position_pct": 15.0,
             "weekly_new_buy": True,
+            "min_hold_days": 14,
         },
         "log": [],
     }
@@ -352,6 +356,7 @@ class FundConfig(BaseModel):
     position_pct: float = 5.0
     max_position_pct: float = 15.0
     weekly_new_buy: bool = True
+    min_hold_days: int = 14
 
 
 # ── Settings endpoints ────────────────────────────────────────────────────────
@@ -385,6 +390,19 @@ async def save_settings(data: SettingsUpdate):
 
     load_dotenv(ENV_FILE, override=True)
     return {"ok": True, "updated": list(updates.keys())}
+
+
+# ── Auth endpoint ─────────────────────────────────────────────────────────────
+
+@app.post("/auth/password")
+async def check_password(data: dict):
+    """Check the site password for the public-facing read-only view gate."""
+    site_password = os.getenv("SITE_PASSWORD", "").strip()
+    if not site_password:
+        raise HTTPException(status_code=503, detail="SITE_PASSWORD not configured on server.")
+    if data.get("password", "") == site_password:
+        return {"ok": True}
+    raise HTTPException(status_code=401, detail="Incorrect password.")
 
 
 # ── Portfolio endpoints ───────────────────────────────────────────────────────
@@ -1122,6 +1140,26 @@ async def _scout_scheduler():
 
 _fund_executor = concurrent.futures.ThreadPoolExecutor(max_workers=2, thread_name_prefix="fund")
 
+_ET_OFFSET = timedelta(hours=4)   # UTC−4 EDT (covers DST; NYSE uses ET)
+
+def _next_market_close() -> str:
+    """Return naive ISO string of the next weekday 4:00 PM ET (= 20:00 UTC during EDT)."""
+    now_utc = datetime.utcnow()
+    close_utc = now_utc.replace(hour=20, minute=0, second=0, microsecond=0)
+    if now_utc >= close_utc:
+        close_utc += timedelta(days=1)
+    # Skip weekends
+    while close_utc.weekday() >= 5:
+        close_utc += timedelta(days=1)
+    return close_utc.isoformat()  # no "Z" — keeps it naive to match datetime.utcnow()
+
+
+def _next_biweekly() -> str:
+    """Return naive ISO string 14 days from now at midnight UTC."""
+    return (datetime.utcnow() + timedelta(days=14)).replace(
+        hour=0, minute=0, second=0, microsecond=0
+    ).isoformat()
+
 
 def _fund_log(msg: str):
     """Append a timestamped log entry to the fund state, capped at 200 entries."""
@@ -1156,11 +1194,32 @@ def _log_portfolio_action(ticker: str, action: str, qty, price, signal: str, rea
     PORTFOLIO_HISTORY_FILE.write_text(json.dumps(history[:300], indent=2))
 
 
+# Fallback model chains per provider — tried in order when a 429 is hit.
+# Each entry is (deep_think_llm, quick_think_llm).
+_MODEL_FALLBACKS: dict[str, list[tuple[str, str]]] = {
+    "google": [
+        ("gemini-2.5-pro",   "gemini-2.5-flash"),
+        ("gemini-2.5-flash", "gemini-2.5-flash"),
+        ("gemini-2.0-flash", "gemini-2.0-flash"),
+        ("gemini-1.5-flash", "gemini-1.5-flash"),
+    ],
+    "openai": [
+        ("gpt-4o",      "gpt-4o-mini"),
+        ("gpt-4o-mini", "gpt-4o-mini"),
+    ],
+    "anthropic": [
+        ("claude-opus-4-7",   "claude-haiku-4-5-20251001"),
+        ("claude-haiku-4-5-20251001", "claude-haiku-4-5-20251001"),
+    ],
+}
+
+
 def _run_analysis_simple(ticker: str, cfg: dict, max_retries: int = 3):
     """
     Run TradingAgentsGraph for a single ticker using cfg's llm settings.
     Returns (signal, raw_decision, price).
-    Automatically retries on Gemini 429 RESOURCE_EXHAUSTED with backoff.
+    On a 429, rotates through the model fallback chain immediately (no sleep).
+    Only sleeps if every model in the chain is exhausted.
     """
     import time
     from tradingagents.graph.trading_graph import TradingAgentsGraph
@@ -1169,17 +1228,28 @@ def _run_analysis_simple(ticker: str, cfg: dict, max_retries: int = 3):
     from tradingagents.dataflows.config import set_config
 
     date = datetime.utcnow().strftime("%Y-%m-%d")
+    provider = cfg.get("llm_provider", "google")
 
-    ta_cfg = DEFAULT_CONFIG.copy()
-    ta_cfg.update({
-        "llm_provider":            cfg.get("llm_provider", "google"),
-        "deep_think_llm":          cfg.get("deep_think_llm", "gemini-2.5-pro"),
-        "quick_think_llm":         cfg.get("quick_think_llm", "gemini-2.5-flash"),
-        "max_debate_rounds":       1,
-        "max_risk_discuss_rounds": 1,
-    })
+    # Build rotation list: configured model first, then fallbacks
+    fallbacks = _MODEL_FALLBACKS.get(provider, [])
+    configured = (cfg.get("deep_think_llm", "gemini-2.5-pro"), cfg.get("quick_think_llm", "gemini-2.5-flash"))
+    # Put configured first, then any fallbacks not already tried
+    rotation = [configured] + [f for f in fallbacks if f != configured]
 
-    for attempt in range(max_retries):
+    model_idx = 0
+
+    for attempt in range(max_retries + len(rotation)):
+        deep, quick = rotation[min(model_idx, len(rotation) - 1)]
+
+        ta_cfg = DEFAULT_CONFIG.copy()
+        ta_cfg.update({
+            "llm_provider":            provider,
+            "deep_think_llm":          deep,
+            "quick_think_llm":         quick,
+            "max_debate_rounds":       1,
+            "max_risk_discuss_rounds": 1,
+        })
+
         try:
             ta = TradingAgentsGraph(debug=False, config=ta_cfg)
             set_config(ta_cfg)
@@ -1224,25 +1294,29 @@ def _run_analysis_simple(ticker: str, cfg: dict, max_retries: int = 3):
         except Exception as exc:
             exc_str = str(exc)
             is_rate_limit = "RESOURCE_EXHAUSTED" in exc_str or "429" in exc_str or "quota" in exc_str.lower()
-            if is_rate_limit and attempt < max_retries - 1:
-                # Parse retry delay from error if available, default to 90s
-                wait = 90
-                import re as _re
-                # Try to parse retryDelay field specifically (e.g. 'retryDelay': '29s')
-                m = _re.search(r"retryDelay['\"]?\s*:\s*['\"]?(\d+)s", exc_str, _re.IGNORECASE)
-                if m:
-                    parsed = int(m.group(1))
-                    wait = min(max(parsed + 15, 60), 120)  # cap at 120s
+            if is_rate_limit:
+                next_idx = model_idx + 1
+                if next_idx < len(rotation):
+                    # Rotate to next model immediately — no sleep
+                    next_deep, next_quick = rotation[next_idx]
+                    _fund_log(f"{ticker}: rate limited on {deep} — rotating to {next_deep}")
+                    _send_discord_webhook(
+                        title=f"⚡ Model Rotated — {ticker}",
+                        description=f"Rate limit hit on **{deep}**. Switching to **{next_deep}**.",
+                        signal="Hold",
+                    )
+                    model_idx = next_idx
+                    continue
                 else:
-                    # Exponential backoff: 60s, 90s
-                    wait = 60 + attempt * 30
-                _fund_log(f"{ticker}: rate limited (429) — waiting {wait}s before retry {attempt + 2}/{max_retries}…")
-                _send_discord_webhook(
-                    title=f"⏳ Rate Limited — {ticker}",
-                    description=f"Gemini quota hit. Waiting **{wait}s** then retrying (attempt {attempt + 2}/{max_retries}).",
-                    signal="Hold",
-                )
-                time.sleep(wait)
+                    # All models exhausted — wait 60s then retry the last one
+                    _fund_log(f"{ticker}: all models rate limited — waiting 60s…")
+                    _send_discord_webhook(
+                        title=f"⏳ All Models Rate Limited — {ticker}",
+                        description=f"Every model in the rotation hit its quota. Waiting **60s** then retrying with **{deep}**.",
+                        signal="Hold",
+                    )
+                    time.sleep(60)
+                    continue
             else:
                 _fund_log(f"Error analyzing {ticker}: {exc}")
                 _send_discord_webhook(
@@ -1330,7 +1404,7 @@ def _run_fund_launch():
                 continue
 
         now = datetime.utcnow()
-        next_daily = (now + timedelta(hours=24)).isoformat()
+        next_daily = _next_market_close()
         # Next Sunday midnight UTC
         days_until_sunday = (6 - now.weekday()) % 7 or 7
         next_sunday = (now + timedelta(days=days_until_sunday)).replace(
@@ -1340,6 +1414,7 @@ def _run_fund_launch():
         fund = _load_fund()
         fund["active"] = True
         fund["next_daily_review"] = next_daily
+        fund["next_biweekly_analysis"] = _next_biweekly()
         fund["next_weekly_report"] = next_sunday
         _save_fund(fund)
 
@@ -1359,13 +1434,13 @@ def _run_fund_launch():
             signal="",
         )
         try:
-            # Keep active so any positions already bought stay monitored.
-            # Only schedule if not already set (partial success case).
             fund = _load_fund()
             now = datetime.utcnow()
             fund["active"] = True
             if not fund.get("next_daily_review"):
-                fund["next_daily_review"] = (now + timedelta(hours=24)).isoformat() + "Z"
+                fund["next_daily_review"] = _next_market_close()
+            if not fund.get("next_biweekly_analysis"):
+                fund["next_biweekly_analysis"] = _next_biweekly()
             if not fund.get("next_weekly_report"):
                 days_until_sunday = (6 - now.weekday()) % 7 or 7
                 fund["next_weekly_report"] = (now + timedelta(days=days_until_sunday)).replace(
@@ -1377,45 +1452,145 @@ def _run_fund_launch():
 
 
 def _run_daily_review():
-    """Review all positions, rebalance based on fresh signals. Runs in thread pool."""
+    """
+    Snapshot report of today's portfolio performance. No AI, no trades.
+    Flags any position down >15% from entry as a watch item.
+    Runs in thread pool — completes in seconds.
+    """
+    try:
+        _fund_log("Daily review started")
+
+        account   = alpaca_client.get_account()
+        positions = alpaca_client.get_positions()
+        now       = datetime.utcnow()
+
+        equity      = float(account.get("equity") or 0)
+        last_equity = float(account.get("last_equity") or equity)
+        cash        = float(account.get("cash") or 0)
+        day_pnl     = equity - last_equity
+        day_pnl_pct = (day_pnl / last_equity * 100) if last_equity else 0
+
+        lines = [
+            f"**Portfolio:** ${equity:,.2f}  ({day_pnl:+,.2f} / {day_pnl_pct:+.2f}% today)",
+            f"**Cash:** ${cash:,.2f}",
+            "",
+            f"**Positions ({len(positions)}):**",
+        ]
+
+        watch_flags = []
+        for pos in positions:
+            sym      = pos.get("symbol", "?")
+            mkt_val  = float(pos.get("market_value") or 0)
+            unrl     = float(pos.get("unrealized_pl") or 0)
+            unrl_pct = float(pos.get("unrealized_plpc") or 0) * 100
+            today_pl = float(pos.get("unrealized_intraday_pl") or 0)
+
+            flag = ""
+            if unrl_pct <= -15:
+                flag = " ⚠️"
+                watch_flags.append(f"{sym} is down {unrl_pct:.1f}% from entry")
+
+            lines.append(
+                f"  • **{sym}**: ${mkt_val:,.2f}  "
+                f"(total P&L: {unrl:+,.2f} / {unrl_pct:+.1f}%){flag}"
+            )
+
+        if watch_flags:
+            lines.append("")
+            lines.append("**⚠️ Watch:**")
+            for w in watch_flags:
+                lines.append(f"  • {w}")
+
+        if not positions:
+            lines.append("  No open positions.")
+
+        _send_discord_webhook(
+            title="📋 ELLIE Daily Snapshot",
+            description="\n".join(lines)[:1900],
+            footer=f"{now.strftime('%Y-%m-%d %H:%M')} UTC · no trades made",
+        )
+
+        fund = _load_fund()
+        fund["last_daily_review"] = now.isoformat()
+        fund["next_daily_review"] = _next_market_close()
+        _save_fund(fund)
+        _fund_log("Daily review complete")
+
+
+    except Exception as exc:
+        _fund_log(f"Daily review error: {exc}")
+        _send_discord_webhook(
+            title="🚨 Daily Snapshot Failed",
+            description=f"```{str(exc)[:800]}```",
+            signal="",
+        )
+
+
+def _run_biweekly_analysis():
+    """
+    AI analysis of every held position + trade decisions.
+    Respects min_hold_days; emergency override if down >15% after 3+ days.
+    Runs in thread pool every 14 days.
+    """
+    import time as _time
     try:
         fund = _load_fund()
         cfg = fund["config"]
-        _fund_log("Daily review started")
+        _fund_log("Bi-weekly analysis started")
 
+        account   = alpaca_client.get_account()
         positions = alpaca_client.get_positions()
-        if not positions:
-            _fund_log("Daily review: no open positions to review")
-            fund = _load_fund()
-            now = datetime.utcnow()
-            fund["last_daily_review"] = now.isoformat()
-            fund["next_daily_review"] = (now + timedelta(hours=24)).isoformat()
-            _save_fund(fund)
-            return
+        orders    = alpaca_client.get_orders(limit=50)
+        min_hold  = int(cfg.get("min_hold_days", 14))
 
-        # Get portfolio value for position sizing checks
-        account = alpaca_client.get_account()
+        buy_dates: dict[str, datetime] = {}
+        for order in orders:
+            if order.get("side") == "buy" and order.get("status") == "filled":
+                sym = order.get("symbol", "")
+                filled_at_str = order.get("filled_at") or order.get("created_at") or ""
+                if sym and filled_at_str:
+                    try:
+                        filled_at = datetime.fromisoformat(filled_at_str.replace("Z", ""))
+                        if sym not in buy_dates or filled_at < buy_dates[sym]:
+                            buy_dates[sym] = filled_at
+                    except Exception:
+                        pass
+
+        now_dt = datetime.utcnow()
         portfolio_value = float(account.get("portfolio_value") or account.get("equity") or 0)
 
-        decisions = []
         for i, pos in enumerate(positions):
             symbol = pos.get("symbol", "")
             if not symbol:
                 continue
-            # Cooldown between analyses to avoid Gemini rate limits
             if i > 0:
-                import time as _time
                 _fund_log(f"Cooling down 75s before analyzing {symbol}…")
                 _time.sleep(75)
             try:
+                unrl_pct  = float(pos.get("unrealized_plpc") or 0) * 100
+                first_buy = buy_dates.get(symbol)
+                days_held = (now_dt - first_buy).days if first_buy else 999
+                emergency = days_held >= 3 and unrl_pct <= -15
+
+                if days_held < min_hold and not emergency:
+                    _fund_log(f"{symbol}: holding — only {days_held}d in (min {min_hold}d)")
+                    continue
+
                 signal, raw_decision, price = _run_analysis_simple(symbol, cfg)
+                _discord_analysis_embed(
+                    ticker=symbol, signal=signal, entry_price=price,
+                    reasoning=raw_decision,
+                    provider=cfg.get("llm_provider", "google"),
+                    date=now_dt.strftime("%Y-%m-%d"),
+                )
+
                 market_value = float(pos.get("market_value") or 0)
-                current_pct = (market_value / portfolio_value * 100) if portfolio_value > 0 else 0
+                current_pct  = (market_value / portfolio_value * 100) if portfolio_value > 0 else 0
 
                 if signal in ("Sell", "Underweight"):
-                    order = alpaca_client.close_position(symbol)
-                    decisions.append(f"SELL {symbol} (signal={signal})")
-                    _fund_log(f"Closed position in {symbol} — signal={signal}")
+                    alpaca_client.close_position(symbol)
+                    reason = "emergency exit" if emergency else f"signal after {days_held}d hold"
+                    _fund_log(f"Sold {symbol} — {reason}")
                     _log_portfolio_action(symbol, "SELL", pos.get("qty"), price, signal, reasoning=raw_decision)
                 elif signal in ("Buy", "Overweight"):
                     max_pct = cfg.get("max_position_pct", 15.0)
@@ -1424,64 +1599,43 @@ def _run_daily_review():
                         qty = alpaca_client.calculate_position_size(symbol, add_pct / 100)
                         if qty > 0:
                             alpaca_client.submit_order(symbol, "buy", qty=qty)
-                            decisions.append(f"ADD {symbol} +{qty} shares (signal={signal})")
-                            _fund_log(f"Added {qty} shares to {symbol} — signal={signal}")
+                            _fund_log(f"Added {qty} shares to {symbol} after {days_held}d hold")
                             _log_portfolio_action(symbol, "ADD", qty, price, signal, reasoning=raw_decision)
                         else:
-                            decisions.append(f"HOLD {symbol} (BUY signal, at max position)")
-                            _fund_log(f"Holding {symbol} — already at max position")
-                            _log_portfolio_action(symbol, "HOLD", 0, price, signal, reasoning=raw_decision)
+                            _fund_log(f"Holding {symbol} — at max position")
                     else:
-                        decisions.append(f"HOLD {symbol} (BUY signal, at max position {max_pct}%)")
-                        _fund_log(f"Holding {symbol} — at max position {max_pct}%")
-                        _log_portfolio_action(symbol, "HOLD", 0, price, signal, reasoning=raw_decision)
+                        _fund_log(f"Holding {symbol} — already at max position size")
                 else:
-                    decisions.append(f"HOLD {symbol} (signal={signal})")
-                    _fund_log(f"Holding {symbol} — signal={signal}")
-                    _log_portfolio_action(symbol, "HOLD", 0, price, signal, reasoning=raw_decision)
+                    _fund_log(f"Holding {symbol} — signal={signal} after {days_held}d")
+
             except Exception as exc:
-                decisions.append(f"ERROR {symbol}: {exc}")
-                _fund_log(f"Error reviewing {symbol}: {exc}")
-                _send_discord_webhook(
-                    title=f"⚠️ Daily Review — Error on {symbol}",
-                    description=f"{str(exc)[:500]}",
-                    signal="",
-                )
+                _fund_log(f"Error analyzing {symbol}: {exc}")
                 continue
 
-        now = datetime.utcnow()
-        summary = "\n".join(decisions) if decisions else "No changes made."
-        _send_discord_webhook(
-            title="📋 ELLIE Daily Review Complete",
-            description=summary[:1900],
-            footer=f"Reviewed {len(positions)} position(s) · {now.strftime('%Y-%m-%d %H:%M')} UTC",
-        )
-
         fund = _load_fund()
-        fund["last_daily_review"] = now.isoformat()
-        fund["next_daily_review"] = (now + timedelta(hours=24)).isoformat()
+        fund["last_biweekly_analysis"] = now_dt.isoformat()
+        fund["next_biweekly_analysis"] = _next_biweekly()
         _save_fund(fund)
-        _fund_log("Daily review complete")
+        _fund_log("Bi-weekly analysis complete")
 
     except Exception as exc:
-        _fund_log(f"Daily review error: {exc}")
+        _fund_log(f"Bi-weekly analysis error: {exc}")
         _send_discord_webhook(
-            title="🚨 Daily Review Failed",
+            title="🚨 Bi-Weekly Analysis Failed",
             description=f"```{str(exc)[:800]}```",
             signal="",
         )
 
 
 def _run_weekly_report():
-    """Build and send a weekly performance report. Runs in thread pool."""
+    """Build and send a weekly performance summary to Discord. No AI, no trades."""
     try:
         fund = _load_fund()
         cfg = fund["config"]
         _fund_log("Weekly report started")
 
-        account = alpaca_client.get_account()
+        account   = alpaca_client.get_account()
         positions = alpaca_client.get_positions()
-        orders = alpaca_client.get_orders(limit=50)
 
         portfolio_value = account.get("portfolio_value") or account.get("equity") or 0
         cash = account.get("cash") or 0
@@ -1497,8 +1651,8 @@ def _run_weekly_report():
             f"**Open Positions ({len(positions)}):**",
         ]
         for pos in positions:
-            sym = pos.get("symbol", "?")
-            unrl = pos.get("unrealized_pl") or 0
+            sym     = pos.get("symbol", "?")
+            unrl    = pos.get("unrealized_pl") or 0
             unrl_pct = pos.get("unrealized_plpc") or 0
             lines.append(
                 f"  • {sym}: ${float(pos.get('market_value') or 0):,.2f} "
@@ -1576,7 +1730,7 @@ def _run_weekly_report():
 
 
 async def _fund_scheduler():
-    """Every 5 min: check if daily review or weekly report is due."""
+    """Every 5 min: check if daily review, bi-weekly analysis, or weekly report is due."""
     loop = asyncio.get_event_loop()
     while True:
         await asyncio.sleep(300)
@@ -1587,15 +1741,34 @@ async def _fund_scheduler():
 
             now = datetime.utcnow()
 
-            # Daily review
+            # Daily snapshot
             next_daily = fund.get("next_daily_review")
-            if next_daily and datetime.fromisoformat(next_daily) <= now:
-                await loop.run_in_executor(_fund_executor, _run_daily_review)
+            if next_daily:
+                next_daily_dt = datetime.fromisoformat(next_daily.replace("Z", ""))
+                if next_daily_dt <= now:
+                    fund["next_daily_review"] = None
+                    _save_fund(fund)
+                    await loop.run_in_executor(_fund_executor, _run_daily_review)
 
-            # Weekly report
+            # Bi-weekly AI analysis + trade decisions
+            fund = _load_fund()
+            next_biweekly = fund.get("next_biweekly_analysis")
+            if next_biweekly:
+                next_biweekly_dt = datetime.fromisoformat(next_biweekly.replace("Z", ""))
+                if next_biweekly_dt <= now:
+                    fund["next_biweekly_analysis"] = None
+                    _save_fund(fund)
+                    await loop.run_in_executor(_fund_executor, _run_biweekly_analysis)
+
+            # Weekly summary report
+            fund = _load_fund()
             next_weekly = fund.get("next_weekly_report")
-            if next_weekly and datetime.fromisoformat(next_weekly) <= now:
-                await loop.run_in_executor(_fund_executor, _run_weekly_report)
+            if next_weekly:
+                next_weekly_dt = datetime.fromisoformat(next_weekly.replace("Z", ""))
+                if next_weekly_dt <= now:
+                    fund["next_weekly_report"] = None
+                    _save_fund(fund)
+                    await loop.run_in_executor(_fund_executor, _run_weekly_report)
 
         except Exception:
             pass
@@ -2068,6 +2241,8 @@ async def reset_fund():
         "launched_at": None,
         "last_daily_review": None,
         "next_daily_review": None,
+        "last_biweekly_analysis": None,
+        "next_biweekly_analysis": None,
         "last_weekly_report": None,
         "next_weekly_report": None,
         "config": preserved_cfg,

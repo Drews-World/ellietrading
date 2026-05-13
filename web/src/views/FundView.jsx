@@ -53,7 +53,10 @@ function DiscordPreviews() {
         'Signal Types':  '/preview/signals',
       }
       const r = await fetch(urls[t])
-      if (r.ok) setPreviews(p => ({ ...p, [t]: await r.json() }))
+      if (r.ok) {
+        const json = await r.json()
+        setPreviews(p => ({ ...p, [t]: json }))
+      }
     } catch { /* ignore */ } finally {
       setLoading(false)
     }
@@ -305,9 +308,8 @@ export default function FundView() {
 
   const portfolioValue = account?.portfolio_value ?? account?.equity
   const cash = account?.cash
-  const todayPnl = (account?.equity != null && account?.last_equity != null)
-    ? (parseFloat(account.equity) - parseFloat(account.last_equity))
-    : null
+  const todayPnl    = account?.pnl_today     != null ? parseFloat(account.pnl_today)     : null
+  const todayPnlPct = account?.pnl_today_pct != null ? parseFloat(account.pnl_today_pct) : null
 
   const launched  = fund?.launched_at != null
   const isActive  = fund?.active === true
@@ -381,6 +383,11 @@ export default function FundView() {
           <div className={styles.metricLabel}>Today's P&amp;L</div>
           <div className={[styles.metricValue, todayPnl != null ? (todayPnl >= 0 ? styles.green : styles.red) : ''].join(' ')}>
             {todayPnl != null ? `${todayPnl >= 0 ? '+' : ''}$${fmt(todayPnl)}` : '—'}
+            {todayPnlPct != null && (
+              <span style={{ fontSize: '0.8em', marginLeft: 6, opacity: 0.8 }}>
+                ({todayPnlPct >= 0 ? '+' : ''}{fmt(todayPnlPct)}%)
+              </span>
+            )}
           </div>
         </div>
         <div className={styles.metricCard}>

@@ -3,7 +3,7 @@ import styles from './BrokerageView.module.css'
 
 const fmt  = (n, dec = 2) => n == null ? '—' : Number(n).toLocaleString('en-US', { minimumFractionDigits: dec, maximumFractionDigits: dec })
 const fmtD = (n) => n == null ? '—' : `$${fmt(n)}`
-const pct  = (n) => n == null ? '—' : `${n >= 0 ? '+' : ''}${fmt(n * 100)}%`
+const pct  = (n) => n == null ? '—' : `${n >= 0 ? '+' : ''}${fmt(n)}%`
 const clr  = (n) => n >= 0 ? styles.green : styles.red
 
 export default function BrokerageView() {

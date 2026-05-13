@@ -1,0 +1,274 @@
+.page {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-base);
+  font-family: var(--font);
+}
+
+/* ── Header ───────────────────────────────────────────────────────────────── */
+.header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 24px;
+  background: var(--bg-panel);
+  border-bottom: 1px solid var(--border);
+  box-shadow: var(--shadow-sm);
+}
+
+.headerLeft {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.logo {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.logoIcon {
+  font-size: 1.4rem;
+  color: var(--indigo);
+}
+
+.logoText {
+  font-size: 1.3rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  color: var(--text-primary);
+}
+
+.tagline {
+  font-size: 0.78rem;
+  color: var(--text-secondary);
+  padding-left: 14px;
+  border-left: 1px solid var(--border);
+}
+
+.loginBtn {
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 6px 10px;
+  font-size: 1rem;
+  cursor: pointer;
+  color: var(--text-dim);
+  transition: color 0.15s, border-color 0.15s;
+}
+
+.loginBtn:hover {
+  color: var(--text-secondary);
+  border-color: var(--text-dim);
+}
+
+/* ── Content ──────────────────────────────────────────────────────────────── */
+.content {
+  flex: 1;
+  max-width: 860px;
+  width: 100%;
+  margin: 0 auto;
+  padding: 28px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 28px;
+}
+
+.loading, .error {
+  text-align: center;
+  padding: 60px 20px;
+  color: var(--text-secondary);
+  font-size: 0.95rem;
+}
+
+.error { color: var(--red); }
+
+/* ── Metric cards ─────────────────────────────────────────────────────────── */
+.metrics {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 14px;
+}
+
+.metricCard {
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 18px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  box-shadow: var(--shadow-sm);
+}
+
+.metricLabel {
+  font-size: 0.72rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-secondary);
+}
+
+.metricValue {
+  font-size: 1.45rem;
+  font-weight: 700;
+  color: var(--text-primary);
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.metricSub {
+  font-size: 0.85rem;
+  font-weight: 500;
+}
+
+.green { color: var(--green); }
+.red   { color: var(--red);   }
+
+/* ── Sections ─────────────────────────────────────────────────────────────── */
+.section {
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 20px 24px;
+  box-shadow: var(--shadow-sm);
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.sectionTitle {
+  font-size: 0.78rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: var(--text-secondary);
+}
+
+.empty {
+  font-size: 0.9rem;
+  color: var(--text-dim);
+}
+
+/* ── Positions ────────────────────────────────────────────────────────────── */
+.positionList {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.positionRow {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.positionTop {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.positionSymbol {
+  font-size: 1rem;
+  font-weight: 700;
+  color: var(--text-primary);
+  min-width: 60px;
+}
+
+.positionQty {
+  font-size: 0.82rem;
+  color: var(--text-secondary);
+  flex: 1;
+}
+
+.positionValue {
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.positionPnl {
+  font-size: 0.88rem;
+  font-weight: 600;
+  min-width: 160px;
+  text-align: right;
+}
+
+.barTrack {
+  height: 4px;
+  background: var(--border);
+  border-radius: 99px;
+  overflow: hidden;
+}
+
+.barFill {
+  height: 100%;
+  border-radius: 99px;
+  transition: width 0.4s ease;
+}
+
+.barGreen { background: var(--green); }
+.barRed   { background: var(--red);   }
+
+/* ── Activity ─────────────────────────────────────────────────────────────── */
+.activityList {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.activityRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 10px 12px;
+  background: var(--bg-card);
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-dim);
+}
+
+.activityMsg {
+  font-size: 0.88rem;
+  color: var(--text-primary);
+  flex: 1;
+}
+
+.activityTs {
+  font-size: 0.78rem;
+  color: var(--text-dim);
+  white-space: nowrap;
+}
+
+/* ── Footer ───────────────────────────────────────────────────────────────── */
+.footer {
+  text-align: center;
+  padding: 20px;
+  font-size: 0.76rem;
+  color: var(--text-dim);
+  border-top: 1px solid var(--border);
+}
+
+/* ── Responsive ───────────────────────────────────────────────────────────── */
+@media (max-width: 640px) {
+  .metrics {
+    grid-template-columns: repeat(2, 1fr);
+  }
+
+  .positionTop {
+    flex-wrap: wrap;
+  }
+
+  .positionPnl {
+    min-width: unset;
+    text-align: left;
+  }
+
+  .tagline {
+    display: none;
+  }
+}
