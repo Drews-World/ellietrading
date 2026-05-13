@@ -42,8 +42,125 @@ function timeUntil(isoStr) {
   return `in ${Math.ceil(m / 60)}h`
 }
 
+// More precise countdown: "21h 14m", "3d 4h", "overdue"
+function countdown(isoStr) {
+  if (!isoStr) return '—'
+  const diff = new Date(isoStr + (isoStr.endsWith('Z') ? '' : 'Z')).getTime() - Date.now()
+  if (diff <= 0) return 'overdue'
+  const totalMins = Math.floor(diff / 60000)
+  const h = Math.floor(totalMins / 60)
+  const m = totalMins % 60
+  if (h === 0) return `${m}m`
+  if (h < 24) return `${h}h ${m}m`
+  const d = Math.floor(h / 24)
+  const rh = h % 24
+  return `${d}d ${rh}h`
+}
+
+function FundAutomations({ fund, onRunReview }) {
+  const [reviewing, setReviewing] = useState(false)
+  // Tick every 60s so countdowns stay live
+  const [, setTick] = useState(0)
+  useEffect(() => {
+    const iv = setInterval(() => setTick(t => t + 1), 60000)
+    return () => clearInterval(iv)
+  }, [])
+
+  const isActive = fund?.active
+  const weeklyBuyEnabled = fund?.config?.weekly_new_buy ?? true
+
+  const handleRunReview = async () => {
+    setReviewing(true)
+    try {
+      await fetch('/fund/review', { method: 'POST' })
+      onRunReview()
+    } finally {
+      setReviewing(false)
+    }
+  }
+
+  return (
+    <div className={styles.section}>
+      <div className={styles.sectionHeader}>
+        <span className={styles.sectionTitle}>Fund Automations</span>
+        <span className={isActive ? styles.statusActive : styles.statusInactive}>
+          {isActive ? '● Monitoring' : '○ Inactive'}
+        </span>
+      </div>
+      {!isActive ? (
+        <p className={styles.empty}>Fund is not active — launch the fund from the Fund tab to enable automated monitoring.</p>
+      ) : (
+        <div className={styles.scheduleGrid}>
+          {/* Daily Review */}
+          <div className={styles.scheduleCard}>
+            <span className={styles.scheduleLabel}>DAILY REVIEW</span>
+            <span className={styles.scheduleCountdown}>
+              {countdown(fund?.next_daily_review)}
+            </span>
+            <div className={styles.scheduleMeta}>
+              <span>Re-analyzes all positions. Sells weak signals, adds to strong ones.</span>
+            </div>
+            <div className={styles.scheduleTimes}>
+              <span>Last: {timeAgo(fund?.last_daily_review)}</span>
+              <span>Next: {fund?.next_daily_review
+                ? new Date(fund.next_daily_review).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
+                : '—'}</span>
+            </div>
+            <button
+              className={styles.runBtn}
+              onClick={handleRunReview}
+              disabled={reviewing}
+            >
+              {reviewing ? 'Running…' : '▶ Run Now'}
+            </button>
+          </div>
+
+          {/* Weekly Report */}
+          <div className={styles.scheduleCard}>
+            <span className={styles.scheduleLabel}>WEEKLY REPORT</span>
+            <span className={styles.scheduleCountdown}>
+              {countdown(fund?.next_weekly_report)}
+            </span>
+            <div className={styles.scheduleMeta}>
+              <span>Performance summary + P&amp;L sent to Discord every Sunday.</span>
+              {weeklyBuyEnabled && (
+                <span className={styles.weeklyBuyTag}>+ New Buy</span>
+              )}
+            </div>
+            <div className={styles.scheduleTimes}>
+              <span>Last: {timeAgo(fund?.last_weekly_report)}</span>
+              <span>Next: {fund?.next_weekly_report
+                ? new Date(fund.next_weekly_report).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
+                : '—'}</span>
+            </div>
+            {weeklyBuyEnabled && (
+              <div className={styles.weeklyBuyNote}>
+                Will discover &amp; buy 1 new position alongside the report.
+              </div>
+            )}
+          </div>
+
+          {/* Scheduler health */}
+          <div className={styles.scheduleCard}>
+            <span className={styles.scheduleLabel}>SCHEDULER</span>
+            <span className={[styles.scheduleCountdown, styles.schedulerOk].join(' ')}>Active</span>
+            <div className={styles.scheduleMeta}>
+              <span>Checks every 5 minutes. Runs reviews and reports when their timer expires.</span>
+            </div>
+            <div className={styles.scheduleTimes}>
+              <span>Daily review interval: 24h</span>
+              <span>Weekly report: Sundays UTC</span>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
 export default function MonitorView() {
   const [data, setData] = useState({ monitors: [], alerts: [] })
+  const [fund, setFund] = useState(null)
   const [loading, setLoading] = useState(true)
   const [showForm, setShowForm] = useState(false)
   const [form, setForm] = useState({
@@ -61,8 +178,12 @@ export default function MonitorView() {
   const load = useCallback(async (silent = false) => {
     if (!silent) setLoading(true)
     try {
-      const r = await fetch('/monitor')
-      const d = await r.json()
+      const [monRes, fundRes] = await Promise.all([
+        fetch('/monitor'),
+        fetch('/fund'),
+      ])
+      const d = await monRes.json()
+      const f = await fundRes.json()
 
       if (notifPerm.current === 'granted') {
         const newAlerts = (d.alerts || []).filter(a => !a.read && !prevAlertIds.current.has(a.id))
@@ -72,6 +193,7 @@ export default function MonitorView() {
       }
       prevAlertIds.current = new Set((d.alerts || []).map(a => a.id))
       setData(d)
+      setFund(f)
     } catch { /* ignore */ } finally {
       setLoading(false)
     }
@@ -149,6 +271,8 @@ export default function MonitorView() {
           </button>
         </div>
       </div>
+
+      <FundAutomations fund={fund} onRunReview={() => load(true)} />
 
       {showForm && (
         <div className={styles.formCard}>

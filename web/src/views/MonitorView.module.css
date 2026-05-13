@@ -367,3 +367,98 @@
   transition: border-color 0.15s, color 0.15s;
 }
 .deleteBtn:hover { border-color: var(--red-border); color: var(--red); }
+
+/* Fund automation status badge */
+.statusActive {
+  font-size: 11px;
+  font-weight: 700;
+  padding: 3px 10px;
+  border-radius: 20px;
+  color: var(--green);
+  background: var(--green-light);
+  letter-spacing: 0.03em;
+}
+.statusInactive {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 3px 10px;
+  border-radius: 20px;
+  color: var(--text-secondary);
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+}
+
+/* Schedule cards grid */
+.scheduleGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+}
+
+.scheduleCard {
+  padding: 18px 20px;
+  border-right: 1px solid var(--border-dim);
+  border-bottom: 1px solid var(--border-dim);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.scheduleCard:last-child { border-right: none; }
+
+.scheduleLabel {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  color: var(--text-secondary);
+}
+
+.scheduleCountdown {
+  font-family: var(--font-mono);
+  font-size: 28px;
+  font-weight: 700;
+  color: var(--indigo);
+  line-height: 1;
+}
+
+.schedulerOk {
+  color: var(--green);
+  font-size: 20px;
+}
+
+.scheduleMeta {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 11px;
+  color: var(--text-secondary);
+  line-height: 1.5;
+}
+
+.scheduleTimes {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+.weeklyBuyTag {
+  display: inline-block;
+  margin-top: 2px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: var(--indigo);
+  background: var(--indigo-light);
+  border-radius: 4px;
+  padding: 1px 6px;
+  width: fit-content;
+}
+
+.weeklyBuyNote {
+  font-size: 11px;
+  color: var(--indigo);
+  background: var(--indigo-light);
+  border-radius: var(--radius-sm);
+  padding: 6px 10px;
+  line-height: 1.4;
+}

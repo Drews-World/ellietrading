@@ -1306,8 +1306,18 @@ def _run_fund_launch():
             signal="",
         )
         try:
+            # Keep active so any positions already bought stay monitored.
+            # Only schedule if not already set (partial success case).
             fund = _load_fund()
-            fund["active"] = False
+            now = datetime.utcnow()
+            fund["active"] = True
+            if not fund.get("next_daily_review"):
+                fund["next_daily_review"] = (now + timedelta(hours=24)).isoformat() + "Z"
+            if not fund.get("next_weekly_report"):
+                days_until_sunday = (6 - now.weekday()) % 7 or 7
+                fund["next_weekly_report"] = (now + timedelta(days=days_until_sunday)).replace(
+                    hour=0, minute=0, second=0, microsecond=0
+                ).isoformat() + "Z"
             _save_fund(fund)
         except Exception:
             pass
