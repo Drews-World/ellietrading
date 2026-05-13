@@ -441,7 +441,10 @@ def _send_discord_webhook(title: str, description: str, signal: str = "", fields
         embed["footer"] = {"text": footer}
     payload = json.dumps({"embeds": [embed]}).encode()
     try:
-        req = ur.Request(webhook_url, data=payload, headers={"Content-Type": "application/json"}, method="POST")
+        req = ur.Request(webhook_url, data=payload, headers={
+            "Content-Type": "application/json",
+            "User-Agent": "DiscordBot (https://github.com, 1.0)",
+        }, method="POST")
         ur.urlopen(req, timeout=10)
         _fund_log(f"Discord: sent '{title}'")
     except Exception as e:
