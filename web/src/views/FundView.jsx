@@ -1,6 +1,109 @@
 import { useState, useEffect, useCallback } from 'react'
 import styles from './FundView.module.css'
 
+// Discord color int → CSS hex
+const discordColor = (n) => n ? `#${(n >>> 0).toString(16).padStart(6, '0')}` : '#5865f2'
+
+function DiscordEmbed({ embed }) {
+  if (!embed) return null
+  const border = discordColor(embed.color)
+  return (
+    <div className={styles.discordEmbed} style={{ borderLeftColor: border }}>
+      {embed.title && <div className={styles.discordTitle}>{embed.title}</div>}
+      {embed.description && (
+        <div className={styles.discordDesc}>
+          {embed.description.split('\n').map((line, i) => (
+            <span key={i}>
+              {line.replace(/\*\*(.*?)\*\*/g, (_, t) => t)}{'\n'}
+            </span>
+          ))}
+        </div>
+      )}
+      {embed.fields && embed.fields.length > 0 && (
+        <div className={styles.discordFields}>
+          {embed.fields.map((f, i) => (
+            <div key={i} className={[styles.discordField, f.inline && styles.discordFieldInline].filter(Boolean).join(' ')}>
+              <div className={styles.discordFieldName}>{f.name}</div>
+              <div className={styles.discordFieldValue}>{f.value}</div>
+            </div>
+          ))}
+        </div>
+      )}
+      {embed.footer && (
+        <div className={styles.discordFooter}>{embed.footer.text || embed.footer}</div>
+      )}
+    </div>
+  )
+}
+
+const PREVIEW_TABS = ['Weekly Report', 'Daily Review', 'Signal Types']
+
+function DiscordPreviews() {
+  const [tab, setTab] = useState('Weekly Report')
+  const [previews, setPreviews] = useState({})
+  const [loading, setLoading] = useState(false)
+
+  const load = async (t) => {
+    if (previews[t]) return
+    setLoading(true)
+    try {
+      const urls = {
+        'Weekly Report': '/preview/weekly-report',
+        'Daily Review':  '/preview/daily-review',
+        'Signal Types':  '/preview/signals',
+      }
+      const r = await fetch(urls[t])
+      if (r.ok) setPreviews(p => ({ ...p, [t]: await r.json() }))
+    } catch { /* ignore */ } finally {
+      setLoading(false)
+    }
+  }
+
+  useEffect(() => { load(tab) }, [tab])
+
+  const data = previews[tab]
+
+  return (
+    <div className={styles.previewPanel}>
+      <div className={styles.previewHeader}>
+        <span className={styles.previewTitle}>Discord Message Previews</span>
+        <span className={styles.previewSub}>What each notification looks like when sent</span>
+      </div>
+      <div className={styles.previewTabs}>
+        {PREVIEW_TABS.map(t => (
+          <button
+            key={t}
+            className={[styles.previewTab, tab === t && styles.previewTabActive].filter(Boolean).join(' ')}
+            onClick={() => setTab(t)}
+          >
+            {t}
+          </button>
+        ))}
+      </div>
+      <div className={styles.previewBody}>
+        {loading && <div className={styles.previewLoading}>Loading preview…</div>}
+        {!loading && !data && <div className={styles.previewLoading}>No data.</div>}
+        {!loading && data && (
+          Array.isArray(data) ? (
+            // Signal Types — list of embeds
+            <div className={styles.previewEmbedList}>
+              {data.map((item, i) => (
+                <div key={i}>
+                  <div className={styles.previewSignalLabel}>{item.ticker} · {item.signal}</div>
+                  <DiscordEmbed embed={item.embed} />
+                </div>
+              ))}
+            </div>
+          ) : (
+            // Single embed (weekly report / daily review)
+            <DiscordEmbed embed={data.embed} />
+          )
+        )}
+      </div>
+    </div>
+  )
+}
+
 const PROVIDERS = [
   { value: 'google',    label: 'Google (Gemini)' },
   { value: 'openai',   label: 'OpenAI (GPT)' },
@@ -514,6 +617,9 @@ export default function FundView() {
           {msg.text}
         </div>
       )}
+
+      {/* ── Discord previews ── */}
+      <DiscordPreviews />
 
       {/* ── Activity log ── */}
       <div className={styles.logPanel}>

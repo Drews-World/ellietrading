@@ -2107,6 +2107,108 @@ async def get_logs(n: int = 500):
         return [{"ts": datetime.utcnow().isoformat() + "Z", "level": "ERROR", "src": "api", "msg": f"Could not read log file: {exc}"}]
 
 
+@app.get("/preview/weekly-report")
+async def preview_weekly_report():
+    """Return the Discord embed that _would_ be sent for the weekly report — no HTTP send."""
+    account   = alpaca_client.get_account()
+    positions = alpaca_client.get_positions()
+
+    portfolio_value = account.get("portfolio_value") or account.get("equity") or 0
+    cash            = account.get("cash") or 0
+    daily_pnl = None
+    if account.get("equity") and account.get("last_equity"):
+        daily_pnl = float(account["equity"]) - float(account["last_equity"])
+
+    lines = [
+        f"**Portfolio Value:** ${float(portfolio_value):,.2f}",
+        f"**Cash:** ${float(cash):,.2f}",
+        f"**Today P&L:** ${daily_pnl:+,.2f}" if daily_pnl is not None else "**Today P&L:** —",
+        "",
+        f"**Open Positions ({len(positions)}):**",
+    ]
+    for pos in positions:
+        sym    = pos.get("symbol", "?")
+        unrl   = float(pos.get("unrealized_pl") or 0)
+        unrl_p = float(pos.get("unrealized_plpc") or 0)
+        lines.append(
+            f"  • {sym}: ${float(pos.get('market_value') or 0):,.2f} "
+            f"(P&L: ${unrl:+,.2f} / {unrl_p*100:+.1f}%)"
+        )
+
+    description = "\n".join(lines)
+    embed = {
+        "title":       "📊 ELLIE Weekly Report",
+        "description": description[:1900],
+        "color":       5793266,
+        "footer":      {"text": f"Preview · Generated {datetime.utcnow().strftime('%Y-%m-%d %H:%M')} UTC"},
+    }
+    return {"embed": embed, "payload": {"embeds": [embed]}}
+
+
+@app.get("/preview/daily-review")
+async def preview_daily_review():
+    """Return a sample daily review embed using current positions — no HTTP send."""
+    positions = alpaca_client.get_positions()
+    sample_decisions = []
+    for pos in positions:
+        sym = pos.get("symbol", "?")
+        sample_decisions.append(f"HOLD {sym} — awaiting next analysis signal")
+
+    summary = "\n".join(sample_decisions) if sample_decisions else "No open positions."
+    embed = {
+        "title":       "📋 ELLIE Daily Review Complete",
+        "description": summary,
+        "color":       5793266,
+        "footer":      {"text": f"Preview · {len(positions)} position(s) · {datetime.utcnow().strftime('%Y-%m-%d %H:%M')} UTC"},
+    }
+    return {"embed": embed, "payload": {"embeds": [embed]}}
+
+
+@app.get("/preview/signals")
+async def preview_signals():
+    """Return example Discord embeds for every signal type."""
+    examples = [
+        {
+            "signal": "Buy",
+            "ticker": "NVDA",
+            "price":  "$875.50",
+            "insight": "Strong AI chip demand with robust data center tailwinds driving revenue growth.",
+        },
+        {
+            "signal": "Sell",
+            "ticker": "TSLA",
+            "price":  "$180.00",
+            "insight": "Margin compression and increasing EV competition outweigh near-term catalysts.",
+        },
+        {
+            "signal": "Hold",
+            "ticker": "AAPL",
+            "price":  "$195.00",
+            "insight": "Stable cash flows but limited near-term upside; watchlist for breakout above $210.",
+        },
+    ]
+    result = []
+    for ex in examples:
+        signal = ex["signal"]
+        emoji  = SIGNAL_EMOJI.get(signal, "⬜")
+        plain  = SIGNAL_PLAIN.get(signal, signal)
+        color  = SIGNAL_COLOR.get(signal, 5793266)
+        embed  = {
+            "title":       f"{emoji} {ex['ticker']} — {plain}",
+            "description": f"**Analysis complete** for {ex['ticker']} on {datetime.utcnow().strftime('%Y-%m-%d')}",
+            "color":       color,
+            "fields": [
+                {"name": "Signal",      "value": plain,         "inline": True},
+                {"name": "Entry Price", "value": ex["price"],   "inline": True},
+                {"name": "Provider",    "value": "google",      "inline": True},
+                {"name": "Key Insight", "value": ex["insight"], "inline": False},
+            ],
+            "footer": {"text": f"TradingAgents · {datetime.utcnow().strftime('%Y-%m-%d')}"},
+        }
+        result.append({"signal": signal, "ticker": ex["ticker"], "embed": embed})
+    return result
+
+
 @app.get("/portfolio/history")
 async def get_portfolio_history():
     """Return the fund trade history with reasoning."""

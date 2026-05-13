@@ -623,3 +623,150 @@
     max-height: 300px;
   }
 }
+
+/* ── Discord preview panel ────────────────────────────────────────────────── */
+.previewPanel {
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+}
+
+.previewHeader {
+  padding: 14px 18px 10px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-card);
+}
+
+.previewTitle {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text-primary);
+  display: block;
+}
+
+.previewSub {
+  font-size: 11px;
+  color: var(--text-secondary);
+  margin-top: 2px;
+  display: block;
+}
+
+.previewTabs {
+  display: flex;
+  gap: 0;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-card);
+}
+
+.previewTab {
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: var(--text-secondary);
+  font-family: var(--font);
+  font-size: 12px;
+  font-weight: 500;
+  padding: 8px 16px;
+  cursor: pointer;
+  transition: color 0.15s, border-color 0.15s;
+}
+.previewTab:hover { color: var(--text-primary); }
+.previewTabActive {
+  color: var(--indigo);
+  border-bottom-color: var(--indigo);
+  font-weight: 700;
+}
+
+.previewBody {
+  padding: 18px;
+  background: #1e1f22;   /* Discord dark background */
+  min-height: 120px;
+}
+
+.previewLoading {
+  color: #72767d;
+  font-size: 13px;
+  padding: 20px 0;
+  text-align: center;
+}
+
+.previewEmbedList {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.previewSignalLabel {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  color: #72767d;
+  margin-bottom: 6px;
+  text-transform: uppercase;
+}
+
+/* Discord embed component */
+.discordEmbed {
+  background: #2b2d31;
+  border-left: 4px solid #5865f2;
+  border-radius: 4px;
+  padding: 12px 16px;
+  max-width: 520px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  font-family: 'gg sans', 'Noto Sans', Whitney, 'Helvetica Neue', Helvetica, Roboto, Arial, sans-serif;
+}
+
+.discordTitle {
+  font-size: 15px;
+  font-weight: 700;
+  color: #ffffff;
+  line-height: 1.375;
+}
+
+.discordDesc {
+  font-size: 13px;
+  color: #dbdee1;
+  line-height: 1.375;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.discordFields {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.discordField {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 100%;
+}
+
+.discordFieldInline {
+  min-width: 140px;
+  max-width: 160px;
+  flex: 1;
+}
+
+.discordFieldName {
+  font-size: 12px;
+  font-weight: 700;
+  color: #ffffff;
+}
+
+.discordFieldValue {
+  font-size: 13px;
+  color: #dbdee1;
+}
+
+.discordFooter {
+  font-size: 11px;
+  color: #87898c;
+  margin-top: 4px;
+}
