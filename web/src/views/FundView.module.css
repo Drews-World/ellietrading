@@ -401,6 +401,13 @@
 }
 .reviewBtn:hover:not(:disabled) { background: var(--bg-card); }
 
+.discoverBtn {
+  background: var(--purple-light);
+  color: var(--purple);
+  border: 1px solid var(--purple);
+}
+.discoverBtn:hover:not(:disabled) { background: var(--purple); color: #fff; }
+
 /* Config section (in control panel) */
 .configSection {
   background: var(--bg-panel);

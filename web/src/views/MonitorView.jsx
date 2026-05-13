@@ -1,6 +1,239 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import styles from './MonitorView.module.css'
 
+const EVENT_LABEL = { earnings: '📊 Earnings', ipo: '🚀 IPO', other: '📌 Event' }
+const STATUS_CLASS = {
+  watching:  'statusWatching',
+  triggered: 'statusTriggered',
+  bought:    'statusBought',
+  skipped:   'statusSkipped',
+}
+const STATUS_LABEL = {
+  watching:  'Watching',
+  triggered: 'Analyzing…',
+  bought:    'Bought',
+  skipped:   'Skipped',
+}
+
+function CatalystWatch({ fund }) {
+  const [catalysts, setCatalysts] = useState([])
+  const [scanning, setScanning]   = useState(false)
+
+  const loadCatalysts = useCallback(async () => {
+    try {
+      const r = await fetch('/fund/catalysts')
+      if (r.ok) setCatalysts(await r.json())
+    } catch { /* ignore */ }
+  }, [])
+
+  useEffect(() => { loadCatalysts() }, [loadCatalysts])
+
+  const handleScan = async () => {
+    setScanning(true)
+    try {
+      await fetch('/fund/catalysts/scan', { method: 'POST' })
+      setTimeout(loadCatalysts, 3000)
+    } finally {
+      setTimeout(() => setScanning(false), 3000)
+    }
+  }
+
+  const handleTrigger = async (id) => {
+    await fetch(`/fund/catalysts/${id}/trigger`, { method: 'POST' })
+    setTimeout(loadCatalysts, 2000)
+  }
+
+  const handleDelete = async (id) => {
+    await fetch(`/fund/catalysts/${id}`, { method: 'DELETE' })
+    setCatalysts(prev => prev.filter(c => c.id !== id))
+  }
+
+  const isActive = fund?.active
+  const watching  = catalysts.filter(c => c.status === 'watching')
+  const completed = catalysts.filter(c => c.status !== 'watching').slice(0, 10)
+  const nextScan  = fund?.next_catalyst_scan
+  const lastScan  = fund?.last_catalyst_scan
+
+  return (
+    <div className={styles.section}>
+      <div className={styles.sectionHeader}>
+        <div>
+          <span className={styles.sectionTitle}>Catalyst Watch</span>
+          <span className={styles.sectionSub}>
+            ELLIE autonomously tracks upcoming earnings &amp; IPOs — runs analysis when they fire
+          </span>
+        </div>
+        {isActive && (
+          <button className={styles.scanBtn} onClick={handleScan} disabled={scanning}>
+            {scanning ? '⟳ Scanning…' : '⟳ Scan Now'}
+          </button>
+        )}
+      </div>
+
+      {!isActive ? (
+        <p className={styles.empty}>Fund must be active to enable catalyst watching.</p>
+      ) : (
+        <>
+          <div className={styles.catalystMeta}>
+            {lastScan && <span>Last scan: {new Date(lastScan).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</span>}
+            {nextScan && <span>Next scan: {new Date(nextScan).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</span>}
+          </div>
+
+          {watching.length === 0 && completed.length === 0 ? (
+            <p className={styles.empty}>No catalysts being watched yet — scan runs automatically or click "Scan Now".</p>
+          ) : (
+            <div className={styles.catalystList}>
+              {[...watching, ...completed].map(cat => (
+                <div key={cat.id} className={styles.catalystRow}>
+                  <div className={styles.catalystLeft}>
+                    <span className={styles.catalystTicker}>{cat.ticker}</span>
+                    <span className={styles.catalystEvent}>{EVENT_LABEL[cat.event_type] || '📌 Event'}</span>
+                    <span className={styles.catalystDate}>{cat.event_date}</span>
+                    {cat.reason && <span className={styles.catalystReason}>{cat.reason}</span>}
+                  </div>
+                  <div className={styles.catalystRight}>
+                    <span className={[styles.catalystStatus, styles[STATUS_CLASS[cat.status]]].filter(Boolean).join(' ')}>
+                      {STATUS_LABEL[cat.status] || cat.status}
+                      {cat.result_signal && ` · ${cat.result_signal}`}
+                    </span>
+                    {cat.status === 'watching' && (
+                      <button className={styles.triggerBtn} onClick={() => handleTrigger(cat.id)}>
+                        ▶ Run Now
+                      </button>
+                    )}
+                    <button className={styles.deleteSmBtn} onClick={() => handleDelete(cat.id)}>✕</button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  )
+}
+
+const SOURCE_LABEL = {
+  launch:   '🚀 Launch',
+  discover: '🔍 Discover',
+  catalyst: '📡 Catalyst',
+  weekly:   '📅 Weekly',
+}
+
+const BACKLOG_STATUS_CLASS = {
+  pending:   'statusWatching',
+  bought:    'statusBought',
+  cancelled: 'statusSkipped',
+}
+
+function BuyBacklog({ fundConfig, onConfigChange }) {
+  const [items,   setItems]   = useState([])
+  const [buying,  setBuying]  = useState({})
+  const [loading, setLoading] = useState(true)
+
+  const loadBacklog = useCallback(async () => {
+    try {
+      const r = await fetch('/fund/backlog')
+      if (r.ok) {
+        const d = await r.json()
+        setItems(d.items || [])
+      }
+    } finally {
+      setLoading(false)
+    }
+  }, [])
+
+  useEffect(() => { loadBacklog() }, [loadBacklog])
+
+  const handleBuy = async (id) => {
+    setBuying(b => ({ ...b, [id]: true }))
+    try {
+      const r = await fetch(`/fund/backlog/${id}/buy`, { method: 'POST' })
+      const d = await r.json()
+      if (d.ok) loadBacklog()
+    } finally {
+      setBuying(b => ({ ...b, [id]: false }))
+    }
+  }
+
+  const handleRemove = async (id) => {
+    await fetch(`/fund/backlog/${id}`, { method: 'DELETE' })
+    setItems(prev => prev.filter(i => i.id !== id))
+  }
+
+  const handleClearAll = async () => {
+    if (!confirm('Clear all pending backlog buys?')) return
+    await fetch('/fund/backlog/clear', { method: 'POST' })
+    loadBacklog()
+  }
+
+  const pending   = items.filter(i => i.status === 'pending')
+  const completed = items.filter(i => i.status !== 'pending').slice(0, 10)
+  const autoBuy   = fundConfig?.auto_buy_backlog ?? false
+
+  return (
+    <div className={styles.section}>
+      <div className={styles.sectionHeader}>
+        <div>
+          <span className={styles.sectionTitle}>Buy Backlog</span>
+          <span className={styles.sectionSub}>
+            Stocks ELLIE wants to buy but couldn't due to insufficient cash
+          </span>
+        </div>
+        <div className={styles.backlogHeaderRight}>
+          <label className={styles.autoBuyToggle}>
+            <input
+              type="checkbox"
+              checked={autoBuy}
+              onChange={e => onConfigChange({ auto_buy_backlog: e.target.checked })}
+            />
+            <span>Auto-buy when cash available</span>
+          </label>
+          {pending.length > 0 && (
+            <button className={styles.scanBtn} onClick={handleClearAll}>✕ Clear All</button>
+          )}
+        </div>
+      </div>
+
+      {loading ? (
+        <p className={styles.empty}>Loading…</p>
+      ) : pending.length === 0 && completed.length === 0 ? (
+        <p className={styles.empty}>No queued buys — backlog will fill when ELLIE finds a stock but cash is short.</p>
+      ) : (
+        <div className={styles.catalystList}>
+          {[...pending, ...completed].map(item => (
+            <div key={item.id} className={styles.catalystRow}>
+              <div className={styles.catalystLeft}>
+                <span className={styles.catalystTicker}>{item.ticker}</span>
+                <span className={styles.catalystEvent}>{SOURCE_LABEL[item.source] || item.source}</span>
+                <span className={styles.backlogAmt}>${item.dollar_amount?.toLocaleString('en-US', { maximumFractionDigits: 0 })}</span>
+                {item.reason && <span className={styles.catalystReason}>{item.reason}</span>}
+              </div>
+              <div className={styles.catalystRight}>
+                <span className={[styles.catalystStatus, styles[BACKLOG_STATUS_CLASS[item.status]]].filter(Boolean).join(' ')}>
+                  {item.status === 'pending' ? `${item.qty} shares` : item.status}
+                </span>
+                {item.status === 'pending' && (
+                  <button
+                    className={styles.triggerBtn}
+                    onClick={() => handleBuy(item.id)}
+                    disabled={buying[item.id]}
+                  >
+                    {buying[item.id] ? '…' : '💸 Buy Now'}
+                  </button>
+                )}
+                {item.status === 'pending' && (
+                  <button className={styles.deleteSmBtn} onClick={() => handleRemove(item.id)}>✕</button>
+                )}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
 const SIGNAL_COLOR = {
   Buy: 'green', Overweight: 'green',
   Hold: 'yellow',
@@ -289,6 +522,19 @@ export default function MonitorView() {
       </div>
 
       <FundAutomations fund={fund} onRunReview={() => load(true)} />
+      <CatalystWatch fund={fund} />
+      <BuyBacklog
+        fundConfig={fund?.config}
+        onConfigChange={async (patch) => {
+          const next = { ...(fund?.config ?? {}), ...patch }
+          setFund(f => ({ ...f, config: next }))
+          await fetch('/fund/config', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(next),
+          })
+        }}
+      />
 
       {showForm && (
         <div className={styles.formCard}>

@@ -40,6 +40,8 @@ PORTFOLIO_FILE = Path.home() / ".tradingagents" / "ui_portfolio.json"
 MONITOR_FILE   = Path.home() / ".tradingagents" / "ui_monitors.json"
 SCOUT_FILE     = Path.home() / ".tradingagents" / "ui_scout.json"
 FUND_FILE      = Path.home() / ".tradingagents" / "fund_state.json"
+CATALYST_FILE  = Path.home() / ".tradingagents" / "catalyst_watch.json"
+BACKLOG_FILE   = Path.home() / ".tradingagents" / "buy_backlog.json"
 PORTFOLIO_HISTORY_FILE = Path.home() / ".tradingagents" / "portfolio_history.json"
 PORTFOLIO_FILE.parent.mkdir(parents=True, exist_ok=True)
 APP_LOG_FILE = Path.home() / ".tradingagents" / "app.log"
@@ -80,6 +82,7 @@ TRACKED_KEYS = [
     "APCA_API_KEY_ID",
     "APCA_API_SECRET_KEY",
     "APCA_BASE_URL",
+    "FINNHUB_API_KEY",
     "SITE_PASSWORD",
 ]
 
@@ -215,6 +218,9 @@ def _load_fund() -> dict:
             "max_position_pct": 15.0,
             "weekly_new_buy": True,
             "min_hold_days": 14,
+            "investment_style": "mixed",
+            "discovery_count": 1,
+            "auto_buy_backlog": False,
         },
         "log": [],
     }
@@ -357,6 +363,9 @@ class FundConfig(BaseModel):
     max_position_pct: float = 15.0
     weekly_new_buy: bool = True
     min_hold_days: int = 14
+    investment_style: str = "mixed"   # "longterm" | "shortterm" | "mixed"
+    discovery_count: int = 1          # how many new stocks to find+buy on manual discover
+    auto_buy_backlog: bool = False     # auto-execute backlog buys when cash becomes available
 
 
 # ── Settings endpoints ────────────────────────────────────────────────────────
@@ -749,7 +758,7 @@ async def get_market_data(ticker: str, period: str = "3mo"):
 
 # ── Discover endpoint ─────────────────────────────────────────────────────────
 
-def _discover_stocks_sync(llm_provider: str, model: str, theme: str, count: int, exclude: list = None) -> list:
+def _discover_stocks_sync(llm_provider: str, model: str, theme: str, count: int, exclude: list = None, investment_style: str = "mixed") -> list:
     import random
     from tradingagents.llm_clients.factory import create_llm_client
     from langchain_core.messages import HumanMessage
@@ -757,8 +766,15 @@ def _discover_stocks_sync(llm_provider: str, model: str, theme: str, count: int,
     client = create_llm_client(llm_provider, model)
     llm = client.get_llm()
 
+    style_lines = {
+        "longterm":  "Focus on long-term holds (1–5+ years): strong balance sheets, durable competitive moats, consistent earnings growth, and reasonable valuations. Avoid highly speculative or momentum-only plays.",
+        "shortterm": "Focus on short-term catalysts (days to weeks): upcoming earnings, analyst upgrades, technical breakouts, M&A rumors, macro events. Prioritize momentum and near-term price drivers.",
+        "mixed":     "Balance long-term quality with short-term catalysts. Include both durable compounders and near-term momentum plays.",
+    }
+    style_line = style_lines.get(investment_style, style_lines["mixed"])
+
     theme_line = (
-        f"Focus on: {theme.strip()}."
+        f"Theme focus: {theme.strip()}."
         if theme.strip()
         else "Cover a diverse mix of sectors and market caps."
     )
@@ -797,6 +813,7 @@ def _discover_stocks_sync(llm_provider: str, model: str, theme: str, count: int,
     lens_line = random.choice(lenses)
 
     prompt = f"""You are a senior equity analyst with a contrarian streak. Today is {today}.
+{style_line}
 {theme_line}
 {sector_line}
 {lens_line}
@@ -1161,6 +1178,435 @@ def _next_biweekly() -> str:
     ).isoformat()
 
 
+# ── Catalyst Watch ────────────────────────────────────────────────────────────
+
+def _load_backlog() -> list:
+    if BACKLOG_FILE.exists():
+        try:
+            return json.loads(BACKLOG_FILE.read_text())
+        except Exception:
+            return []
+    return []
+
+
+def _save_backlog(items: list):
+    BACKLOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+    BACKLOG_FILE.write_text(json.dumps(items, indent=2))
+
+
+def _add_to_backlog(ticker: str, signal: str, price, qty: float, dollar_amount: float,
+                    source: str, reason: str = '', raw_decision: str = ''):
+    """Queue a pending buy when insufficient cash. Skips if ticker already pending."""
+    items = _load_backlog()
+    if any(b["ticker"] == ticker and b["status"] == "pending" for b in items):
+        _fund_log(f"Backlog: {ticker} already queued, skipping duplicate")
+        return
+    items.append({
+        "id":            str(uuid.uuid4())[:8],
+        "ticker":        ticker,
+        "signal":        signal,
+        "price":         price,
+        "qty":           qty,
+        "dollar_amount": round(float(dollar_amount), 2),
+        "source":        source,
+        "reason":        reason,
+        "status":        "pending",
+        "added_at":      datetime.utcnow().isoformat(),
+    })
+    _save_backlog(items)
+    _fund_log(f"Backlog: queued {ticker} (need ${dollar_amount:.0f}, source={source})")
+    _send_discord_webhook(
+        title=f"📋 ELLIE Buy Backlog — {ticker}",
+        description=(
+            f"Not enough cash to buy **{int(qty)} shares** of {ticker} (${dollar_amount:,.0f} needed).\n"
+            f"Added to buy queue. Auto-buy will execute when funds are available."
+        ),
+        signal="Hold",
+    )
+
+
+def _fund_buy_or_backlog(ticker: str, qty: float, price, signal: str, cfg: dict,
+                          source: str, reason: str = '', raw_decision: str = '') -> tuple:
+    """
+    Attempt to buy qty shares of ticker.
+    If cash is insufficient, queue in buy backlog instead.
+    Returns (bought: bool, order: dict | None).
+    """
+    if qty <= 0:
+        return False, None
+
+    dollar_needed = qty * float(price or 0) if price else 0
+
+    # Cash gate
+    if dollar_needed > 0:
+        try:
+            account = alpaca_client.get_account()
+            cash = float(account.get("cash", 0))
+        except Exception:
+            cash = 0
+
+        if cash < dollar_needed:
+            _add_to_backlog(ticker, signal, price, qty, dollar_needed, source, reason, raw_decision)
+            _fund_log(f"Backlog: insufficient cash (${cash:.0f}) for {ticker} (${dollar_needed:.0f})")
+            return False, None
+
+    try:
+        order = alpaca_client.submit_order(ticker, "buy", qty=qty)
+        return True, order
+    except Exception as exc:
+        _fund_log(f"Order failed for {ticker}: {exc}")
+        # If order rejected for insufficient funds, backlog it
+        err = str(exc).lower()
+        if dollar_needed > 0 and any(k in err for k in ("insufficient", "buying power", "funds")):
+            _add_to_backlog(ticker, signal, price, qty, dollar_needed, source, reason, raw_decision)
+        return False, None
+
+
+def _run_backlog_autobuy():
+    """Execute pending backlog buys when cash is available. Called by scheduler."""
+    items = _load_backlog()
+    pending = [b for b in items if b["status"] == "pending"]
+    if not pending:
+        return
+    try:
+        account = alpaca_client.get_account()
+        cash = float(account.get("cash", 0))
+    except Exception:
+        return
+
+    bought_count = 0
+    for item in pending:
+        dollar_needed = float(item.get("dollar_amount", 0))
+        if dollar_needed <= 0 or cash < dollar_needed:
+            continue
+
+        ticker = item["ticker"]
+        qty    = float(item["qty"])
+        price  = item.get("price")
+
+        try:
+            order = alpaca_client.submit_order(ticker, "buy", qty=qty)
+            item["status"]    = "bought"
+            item["bought_at"] = datetime.utcnow().isoformat()
+            item["order_id"]  = order.get("id", "")
+            cash -= dollar_needed
+            bought_count += 1
+            _fund_log(f"Backlog auto-buy: {qty} shares of {ticker}")
+            _log_portfolio_action(ticker, "BUY", qty, price, item.get("signal", "Buy"),
+                                  reasoning=item.get("reason", ""), order_id=order.get("id", ""))
+            _send_discord_webhook(
+                title=f"📋 ELLIE Backlog Buy — {ticker}",
+                description=f"Auto-purchased **{int(qty)} shares** of {ticker} from buy queue (${dollar_needed:,.0f})",
+                signal="Buy",
+            )
+        except Exception as exc:
+            _fund_log(f"Backlog auto-buy failed for {ticker}: {exc}")
+
+    _save_backlog(items)
+    if bought_count:
+        _fund_log(f"Backlog: executed {bought_count} queued buy(s)")
+
+
+def _load_catalysts() -> list:
+    if CATALYST_FILE.exists():
+        try:
+            return json.loads(CATALYST_FILE.read_text())
+        except Exception:
+            pass
+    return []
+
+def _save_catalysts(data: list):
+    CATALYST_FILE.parent.mkdir(parents=True, exist_ok=True)
+    CATALYST_FILE.write_text(json.dumps(data, indent=2))
+
+def _fetch_earnings_date(ticker: str) -> str | None:
+    """Try to fetch next earnings date via yfinance. Returns YYYY-MM-DD or None."""
+    try:
+        import yfinance as yf
+        t = yf.Ticker(ticker)
+        cal = t.calendar
+        if cal is None:
+            return None
+        dates = cal.get("Earnings Date", []) if isinstance(cal, dict) else []
+        today = datetime.utcnow().date()
+        future = []
+        for d in (dates if hasattr(dates, "__iter__") else []):
+            try:
+                if hasattr(d, "date"):
+                    d = d.date()
+                elif isinstance(d, str):
+                    from datetime import date as _date
+                    d = datetime.fromisoformat(d).date()
+                if d >= today:
+                    future.append(d)
+            except Exception:
+                pass
+        return str(min(future)) if future else None
+    except Exception:
+        return None
+
+
+def _run_catalyst_scan():
+    """
+    Autonomously discover upcoming earnings/IPO catalysts for the next 2 weeks.
+    Uses Finnhub if key is set, otherwise asks the AI. Runs weekly.
+    Stores interesting candidates in the catalyst watch list.
+    """
+    try:
+        fund = _load_fund()
+        cfg  = fund["config"]
+        _fund_log("Catalyst scan started")
+
+        today     = datetime.utcnow().date()
+        in_2_weeks = today + timedelta(days=14)
+        candidates = []  # list of {ticker, company, event_type, event_date, reason}
+
+        # ── Try Finnhub earnings calendar ──────────────────────────────────────
+        finnhub_key = os.getenv("FINNHUB_API_KEY", "").strip()
+        if finnhub_key:
+            try:
+                import urllib.request as _ur
+                url = (f"https://finnhub.io/api/v1/calendar/earnings"
+                       f"?from={today}&to={in_2_weeks}&token={finnhub_key}")
+                with _ur.urlopen(url, timeout=10) as r:
+                    data = json.loads(r.read())
+                earnings = data.get("earningsCalendar", [])
+                # Filter to US equities with a reasonable estimate
+                for e in earnings:
+                    ticker = (e.get("symbol") or "").upper().strip()
+                    date_str = e.get("date", "")
+                    if not ticker or not date_str:
+                        continue
+                    candidates.append({
+                        "ticker":     ticker,
+                        "company":    e.get("company", ticker),
+                        "event_type": "earnings",
+                        "event_date": date_str,
+                        "reason":     f"Earnings report — est. EPS {e.get('epsEstimate', '?')}",
+                        "source":     "finnhub",
+                    })
+                _fund_log(f"Finnhub returned {len(candidates)} upcoming earnings")
+            except Exception as exc:
+                _fund_log(f"Finnhub fetch failed: {exc}; falling back to AI")
+                candidates = []
+
+        # ── Fallback: ask AI for interesting upcoming catalysts ─────────────────
+        if not candidates:
+            from tradingagents.llm_clients.factory import create_llm_client
+            from langchain_core.messages import HumanMessage
+            style_hint = cfg.get("investment_style", "mixed")
+            today_str  = str(today)
+            cutoff_str = str(in_2_weeks)
+            client = create_llm_client(cfg.get("llm_provider", "google"),
+                                       cfg.get("quick_think_llm", "gemini-2.5-flash"))
+            llm = client.get_llm()
+            prompt = f"""You are a market research agent. Today is {today_str}.
+List US-listed stocks that have earnings calls, IPO pricings, or major analyst days scheduled between {today_str} and {cutoff_str}.
+Investment style preference: {style_hint}.
+Focus on names where the catalyst could be a significant price mover.
+Respond ONLY with a JSON array, no markdown:
+[{{"ticker":"SMCI","company":"Super Micro Computer","event_type":"earnings","event_date":"YYYY-MM-DD","reason":"One sentence on why this catalyst matters"}}]
+Include up to 15 entries. Use real upcoming dates you are confident about."""
+            resp = llm.invoke([HumanMessage(content=prompt)])
+            content = getattr(resp, "content", str(resp))
+            match = re.search(r'\[.*?\]', content, re.DOTALL)
+            if match:
+                try:
+                    raw = json.loads(match.group())
+                    for item in raw:
+                        ticker = (item.get("ticker") or "").upper().strip()
+                        if ticker:
+                            candidates.append({
+                                "ticker":     ticker,
+                                "company":    item.get("company", ticker),
+                                "event_type": item.get("event_type", "earnings"),
+                                "event_date": item.get("event_date", str(in_2_weeks)),
+                                "reason":     item.get("reason", ""),
+                                "source":     "ai",
+                            })
+                except Exception:
+                    pass
+            _fund_log(f"AI suggested {len(candidates)} upcoming catalysts")
+
+        if not candidates:
+            _fund_log("Catalyst scan: no candidates found")
+            return
+
+        # ── Ask AI to rank/filter the candidates ───────────────────────────────
+        from tradingagents.llm_clients.factory import create_llm_client
+        from langchain_core.messages import HumanMessage
+        style_hint = cfg.get("investment_style", "mixed")
+        client = create_llm_client(cfg.get("llm_provider", "google"),
+                                   cfg.get("quick_think_llm", "gemini-2.5-flash"))
+        llm = client.get_llm()
+        # Keep top candidates to avoid huge prompts
+        sample = candidates[:40]
+        already_watching = {c["ticker"] for c in _load_catalysts() if c.get("status") == "watching"}
+        held = {p.get("symbol", "") for p in alpaca_client.get_positions()}
+        exclude = already_watching | held
+
+        prompt2 = f"""You are a senior equity analyst. Investment style: {style_hint}.
+From the upcoming catalysts below, pick up to 8 that are most likely to be significant positive movers.
+Exclude these tickers (already held or already watching): {', '.join(exclude) or 'none'}.
+Candidates:
+{json.dumps(sample, indent=2)}
+
+Respond ONLY with a JSON array of the tickers you select (keep all their original fields, just return the chosen subset):
+[...]"""
+        resp2 = llm.invoke([HumanMessage(content=prompt2)])
+        content2 = getattr(resp2, "content", str(resp2))
+        match2 = re.search(r'\[.*?\]', content2, re.DOTALL)
+        chosen = []
+        if match2:
+            try:
+                chosen = json.loads(match2.group())
+            except Exception:
+                pass
+        if not chosen:
+            chosen = sample[:8]  # fallback: take first 8
+
+        # ── For AI-sourced dates, verify with yfinance ─────────────────────────
+        existing = _load_catalysts()
+        existing_tickers = {c["ticker"] for c in existing}
+        added = 0
+        for item in chosen:
+            ticker = (item.get("ticker") or "").upper().strip()
+            if not ticker or ticker in existing_tickers:
+                continue
+            event_date = item.get("event_date", "")
+            if item.get("source") == "ai" or not event_date:
+                fetched = _fetch_earnings_date(ticker)
+                if fetched:
+                    event_date = fetched
+            if not event_date:
+                event_date = str(in_2_weeks)  # best guess if nothing found
+            existing.append({
+                "id":           str(uuid.uuid4()),
+                "ticker":       ticker,
+                "company":      item.get("company", ticker),
+                "event_type":   item.get("event_type", "earnings"),
+                "event_date":   event_date,
+                "reason":       item.get("reason", ""),
+                "status":       "watching",
+                "added_at":     datetime.utcnow().isoformat() + "Z",
+                "triggered_at": None,
+                "result_signal": None,
+                "auto_discovered": True,
+            })
+            existing_tickers.add(ticker)
+            added += 1
+
+        _save_catalysts(existing)
+
+        # Update next scan time (weekly)
+        fund = _load_fund()
+        fund["next_catalyst_scan"] = (datetime.utcnow() + timedelta(days=7)).replace(
+            hour=20, minute=0, second=0, microsecond=0
+        ).isoformat()
+        fund["last_catalyst_scan"] = datetime.utcnow().isoformat()
+        _save_fund(fund)
+
+        _fund_log(f"Catalyst scan complete — added {added} new catalyst(s) to watch")
+        if added:
+            names = ", ".join(
+                c["ticker"] for c in existing
+                if c.get("status") == "watching" and c.get("auto_discovered")
+            )[-200:]
+            _send_discord_webhook(
+                title="📡 ELLIE Catalyst Scan Complete",
+                description=f"Now watching **{added}** upcoming catalyst(s): {names}",
+            )
+
+    except Exception as exc:
+        _fund_log(f"Catalyst scan error: {exc}")
+
+
+def _run_catalyst_check():
+    """
+    Check if any watched catalysts have reached their event date.
+    For each triggered one, run full analysis and buy if signal is good.
+    Runs in the scheduler shortly after market close each day.
+    """
+    import time as _time
+    try:
+        catalysts = _load_catalysts()
+        today = datetime.utcnow().date()
+        fund  = _load_fund()
+        cfg   = fund["config"]
+
+        pending = [
+            c for c in catalysts
+            if c.get("status") == "watching"
+            and c.get("event_date")
+            and datetime.fromisoformat(c["event_date"]).date() <= today
+        ]
+
+        if not pending:
+            return
+
+        _fund_log(f"Catalyst check: {len(pending)} event(s) triggered today")
+        account  = alpaca_client.get_account()
+        held     = {p.get("symbol", "") for p in alpaca_client.get_positions()}
+
+        for i, cat in enumerate(pending):
+            ticker = cat["ticker"]
+            if i > 0:
+                _fund_log(f"Cooling down 75s before analyzing {ticker}…")
+                _time.sleep(75)
+
+            cat["status"]       = "triggered"
+            cat["triggered_at"] = datetime.utcnow().isoformat() + "Z"
+            _save_catalysts(catalysts)
+
+            try:
+                _fund_log(f"Catalyst triggered: {ticker} ({cat.get('event_type','event')}) — running analysis")
+                signal, raw_decision, price = _run_analysis_simple(ticker, cfg)
+                cat["result_signal"] = signal
+
+                if signal in ("Buy", "Overweight") and ticker not in held:
+                    qty = alpaca_client.calculate_position_size(
+                        ticker, cfg.get("position_pct", 5.0) / 100
+                    )
+                    bought, order = _fund_buy_or_backlog(
+                        ticker, qty, price, signal, cfg,
+                        source="catalyst",
+                        reason=cat.get("reason", ""),
+                        raw_decision=raw_decision,
+                    )
+                    if bought:
+                        cat["status"] = "bought"
+                        _fund_log(f"Catalyst buy: {qty} shares of {ticker} after {cat.get('event_type','event')}")
+                        _log_portfolio_action(ticker, "BUY", qty, price, signal, reasoning=raw_decision)
+                        _send_discord_webhook(
+                            title=f"📡 ELLIE Catalyst Buy — {ticker}",
+                            description=(
+                                f"**{cat.get('event_type','Event').title()}** triggered analysis → **{signal}**\n"
+                                f"Purchased **{qty} shares** @ ${price or '?'}\n"
+                                f"_{cat.get('reason', '')}_"
+                            ),
+                            signal="Buy",
+                        )
+                    else:
+                        # Either backlisted or qty=0
+                        cat["status"] = "skipped" if qty <= 0 else "watching"
+                        _fund_log(f"{ticker}: position size 0 or insufficient cash, skipped/backlisted")
+                elif signal in ("Buy", "Overweight") and ticker in held:
+                    cat["status"] = "skipped"
+                    _fund_log(f"{ticker}: already held, skipping catalyst buy")
+                else:
+                    cat["status"] = "skipped"
+                    _fund_log(f"{ticker}: catalyst signal={signal}, no action taken")
+
+            except Exception as exc:
+                cat["status"] = "skipped"
+                _fund_log(f"Catalyst analysis error for {ticker}: {exc}")
+
+            _save_catalysts(catalysts)
+
+    except Exception as exc:
+        _fund_log(f"Catalyst check error: {exc}")
+
+
 def _fund_log(msg: str):
     """Append a timestamped log entry to the fund state, capped at 200 entries."""
     _app_logger.info(f"[fund] {msg}")
@@ -1351,9 +1797,10 @@ def _run_fund_launch():
         picks = _discover_stocks_sync(
             cfg.get("llm_provider", "google"),
             cfg.get("quick_think_llm", "gemini-2.5-flash"),
-            cfg.get("scout_theme", ""),  # user can set a theme, blank = diverse
+            cfg.get("scout_theme", ""),
             initial_count * 3,
             exclude=held_symbols,
+            investment_style=cfg.get("investment_style", "mixed"),
         )
 
         bought = 0
@@ -1376,8 +1823,11 @@ def _run_fund_launch():
                 if signal in ("Buy", "Overweight"):
                     position_pct = cfg.get("position_pct", 5.0)
                     qty = alpaca_client.calculate_position_size(ticker, position_pct / 100)
-                    if qty > 0:
-                        order = alpaca_client.submit_order(ticker, "buy", qty=qty)
+                    ok, order = _fund_buy_or_backlog(
+                        ticker, qty, price, signal, cfg,
+                        source="launch", raw_decision=raw_decision,
+                    )
+                    if ok:
                         bought += 1
                         _fund_log(f"Bought {qty} shares of {ticker} (order {order.get('id', '?')})")
                         _log_portfolio_action(ticker, "BUY", qty, price, signal, reasoning=raw_decision, order_id=order.get("id", ""))
@@ -1391,7 +1841,7 @@ def _run_fund_launch():
                             ],
                         )
                     else:
-                        _fund_log(f"Skipped {ticker}: calculated qty = 0")
+                        _fund_log(f"Skipped/backlisted {ticker}: qty={qty}")
                 else:
                     _fund_log(f"Skipped {ticker}: signal was {signal}")
             except Exception as exc:
@@ -1677,8 +2127,9 @@ def _run_weekly_report():
                     cfg.get("llm_provider", "google"),
                     cfg.get("quick_think_llm", "gemini-2.5-flash"),
                     cfg.get("scout_theme", ""),
-                    5,  # ask for more so we have options after filtering
+                    5,
                     exclude=held_symbols_list,
+                    investment_style=cfg.get("investment_style", "mixed"),
                 )
                 for j, pick in enumerate(new_picks):
                     ticker = pick.get("ticker", "").upper().strip()
@@ -1696,8 +2147,11 @@ def _run_weekly_report():
                         qty = alpaca_client.calculate_position_size(
                             ticker, cfg.get("position_pct", 5.0) / 100
                         )
-                        if qty > 0:
-                            order = alpaca_client.submit_order(ticker, "buy", qty=qty)
+                        ok, order = _fund_buy_or_backlog(
+                            ticker, qty, price, signal, cfg,
+                            source="weekly", raw_decision=raw_decision,
+                        )
+                        if ok:
                             _fund_log(f"Weekly new buy: {qty} shares of {ticker}")
                             _send_discord_webhook(
                                 title=f"🏦 ELLIE Weekly New Buy — {ticker}",
@@ -1730,7 +2184,7 @@ def _run_weekly_report():
 
 
 async def _fund_scheduler():
-    """Every 5 min: check if daily review, bi-weekly analysis, or weekly report is due."""
+    """Every 5 min: check if daily review, bi-weekly analysis, weekly report, or catalyst tasks are due."""
     loop = asyncio.get_event_loop()
     while True:
         await asyncio.sleep(300)
@@ -1741,6 +2195,12 @@ async def _fund_scheduler():
 
             now = datetime.utcnow()
 
+            # Backlog auto-buy check (runs every scheduler tick if enabled)
+            if fund.get("config", {}).get("auto_buy_backlog", False):
+                backlog = _load_backlog()
+                if any(b["status"] == "pending" for b in backlog):
+                    await loop.run_in_executor(_fund_executor, _run_backlog_autobuy)
+
             # Daily snapshot
             next_daily = fund.get("next_daily_review")
             if next_daily:
@@ -1749,6 +2209,32 @@ async def _fund_scheduler():
                     fund["next_daily_review"] = None
                     _save_fund(fund)
                     await loop.run_in_executor(_fund_executor, _run_daily_review)
+
+            # Catalyst event check (runs daily after market close alongside daily review)
+            fund = _load_fund()
+            next_daily = fund.get("next_daily_review")  # freshly set by _run_daily_review above
+            # Fire catalyst check whenever market close has passed today (20:00 UTC) and not yet fired
+            market_close_today = now.replace(hour=20, minute=0, second=0, microsecond=0)
+            last_cat_check = fund.get("last_catalyst_check", "")
+            last_cat_date  = last_cat_check[:10] if last_cat_check else ""
+            if now >= market_close_today and last_cat_date != str(now.date()):
+                fund["last_catalyst_check"] = now.isoformat()
+                _save_fund(fund)
+                await loop.run_in_executor(_fund_executor, _run_catalyst_check)
+
+            # Weekly catalyst scan (autonomous discovery)
+            fund = _load_fund()
+            next_cat_scan = fund.get("next_catalyst_scan")
+            if next_cat_scan:
+                if datetime.fromisoformat(next_cat_scan.replace("Z", "")) <= now:
+                    fund["next_catalyst_scan"] = None
+                    _save_fund(fund)
+                    await loop.run_in_executor(_fund_executor, _run_catalyst_scan)
+            else:
+                # First run — kick off immediately
+                fund["next_catalyst_scan"] = None
+                _save_fund(fund)
+                await loop.run_in_executor(_fund_executor, _run_catalyst_scan)
 
             # Bi-weekly AI analysis + trade decisions
             fund = _load_fund()
@@ -2227,6 +2713,205 @@ async def trigger_fund_review():
     """Manually trigger an immediate daily review."""
     loop = asyncio.get_event_loop()
     loop.run_in_executor(_fund_executor, _run_daily_review)
+    return {"ok": True}
+
+
+def _run_manual_discover():
+    """Discover and buy N new stocks immediately. Runs in thread pool."""
+    import time as _time
+    try:
+        fund = _load_fund()
+        cfg  = fund["config"]
+        count = int(cfg.get("discovery_count", 1))
+        _fund_log(f"Manual discover started — looking for {count} new position(s)")
+
+        account   = alpaca_client.get_account()
+        positions = alpaca_client.get_positions()
+        held = [p.get("symbol", "") for p in positions]
+
+        picks = _discover_stocks_sync(
+            cfg.get("llm_provider", "google"),
+            cfg.get("quick_think_llm", "gemini-2.5-flash"),
+            cfg.get("scout_theme", ""),
+            count * 3,  # ask for extras so we have options after analysis
+            exclude=held,
+            investment_style=cfg.get("investment_style", "mixed"),
+        )
+
+        bought = 0
+        for i, pick in enumerate(picks):
+            if bought >= count:
+                break
+            ticker = pick.get("ticker", "").upper().strip()
+            if not ticker or ticker in held:
+                continue
+            if i > 0:
+                _fund_log(f"Cooling down 75s before analyzing {ticker}…")
+                _time.sleep(75)
+            try:
+                signal, raw_decision, price = _run_analysis_simple(ticker, cfg)
+                # Only notify Discord on actual purchase — not on hold/sell signals for stocks we don't own
+                if signal in ("Buy", "Overweight"):
+                    qty = alpaca_client.calculate_position_size(ticker, cfg.get("position_pct", 5.0) / 100)
+                    sector_tag = f" · {pick['sector']}" if pick.get('sector') else ''
+                    ok, order = _fund_buy_or_backlog(
+                        ticker, qty, price, signal, cfg,
+                        source="discover",
+                        reason=f"{pick.get('reason', '')}{sector_tag}",
+                        raw_decision=raw_decision,
+                    )
+                    if ok:
+                        _fund_log(f"Manual discover: bought {qty} shares of {ticker}")
+                        _log_portfolio_action(ticker, "BUY", qty, price, signal, reasoning=raw_decision)
+                        _send_discord_webhook(
+                            title=f"🔍 ELLIE Manual Discover — {ticker}",
+                            description=f"Purchased **{qty} shares** of {ticker} @ ${price or '?'}\n_{pick.get('reason', '')}{sector_tag}_",
+                            signal="Buy",
+                        )
+                        held.append(ticker)
+                        bought += 1
+                    elif qty > 0:
+                        # Backlisted — count as "found" so we don't keep searching past discovery_count
+                        held.append(ticker)
+                        bought += 1
+                    else:
+                        _fund_log(f"{ticker}: position size came out 0, skipping")
+                else:
+                    _fund_log(f"{ticker}: signal={signal}, skipping")
+            except Exception as exc:
+                _fund_log(f"Error analyzing {ticker}: {exc}")
+                continue
+
+        _fund_log(f"Manual discover complete — bought {bought}/{count} position(s)")
+        if bought == 0:
+            _send_discord_webhook(
+                title="🔍 ELLIE Manual Discover — No Buys",
+                description=f"Analyzed {len(picks)} candidates, none had a Buy signal. Try again or adjust filters.",
+            )
+    except Exception as exc:
+        _fund_log(f"Manual discover error: {exc}")
+        _send_discord_webhook(
+            title="🚨 Manual Discover Failed",
+            description=f"```{str(exc)[:800]}```",
+            signal="",
+        )
+
+
+@app.post("/fund/discover")
+async def trigger_manual_discover():
+    """Manually trigger stock discovery and buy N new positions."""
+    fund = _load_fund()
+    if not fund.get("active"):
+        raise HTTPException(status_code=400, detail="Fund is not active.")
+    loop = asyncio.get_event_loop()
+    loop.run_in_executor(_fund_executor, _run_manual_discover)
+    return {"ok": True}
+
+
+# ── Catalyst Watch endpoints ───────────────────────────────────────────────────
+
+@app.get("/fund/catalysts")
+async def get_catalysts():
+    """Return the catalyst watch list."""
+    return _load_catalysts()
+
+
+@app.post("/fund/catalysts/scan")
+async def trigger_catalyst_scan():
+    """Manually kick off the autonomous catalyst scan right now."""
+    fund = _load_fund()
+    if not fund.get("active"):
+        raise HTTPException(status_code=400, detail="Fund is not active.")
+    loop = asyncio.get_event_loop()
+    loop.run_in_executor(_fund_executor, _run_catalyst_scan)
+    return {"ok": True}
+
+
+@app.post("/fund/catalysts/{catalyst_id}/trigger")
+async def trigger_catalyst_now(catalyst_id: str):
+    """Manually run analysis on a specific catalyst right now."""
+    catalysts = _load_catalysts()
+    cat = next((c for c in catalysts if c["id"] == catalyst_id), None)
+    if not cat:
+        raise HTTPException(status_code=404, detail="Catalyst not found.")
+    cat["event_date"] = str(datetime.utcnow().date())  # force it to fire today
+    _save_catalysts(catalysts)
+    loop = asyncio.get_event_loop()
+    loop.run_in_executor(_fund_executor, _run_catalyst_check)
+    return {"ok": True}
+
+
+@app.delete("/fund/catalysts/{catalyst_id}")
+async def delete_catalyst(catalyst_id: str):
+    """Remove a catalyst from the watch list."""
+    catalysts = [c for c in _load_catalysts() if c["id"] != catalyst_id]
+    _save_catalysts(catalysts)
+    return {"ok": True}
+
+
+# ── Buy Backlog endpoints ──────────────────────────────────────────────────────
+
+@app.get("/fund/backlog")
+async def get_backlog():
+    """Return the buy backlog list."""
+    items = _load_backlog()
+    # Return all pending + recent bought/cancelled (last 20 non-pending)
+    pending   = [b for b in items if b["status"] == "pending"]
+    completed = [b for b in items if b["status"] != "pending"][-20:]
+    return {"items": pending + completed}
+
+
+@app.post("/fund/backlog/{item_id}/buy")
+async def buy_backlog_item(item_id: str):
+    """Manually execute a pending backlog buy."""
+    items = _load_backlog()
+    item  = next((b for b in items if b["id"] == item_id), None)
+    if not item:
+        raise HTTPException(status_code=404, detail="Backlog item not found")
+    if item["status"] != "pending":
+        return {"ok": False, "message": "Item is not pending"}
+
+    ticker = item["ticker"]
+    qty    = float(item["qty"])
+    price  = item.get("price")
+    loop   = asyncio.get_event_loop()
+
+    def _do_buy():
+        try:
+            order = alpaca_client.submit_order(ticker, "buy", qty=qty)
+            item["status"]    = "bought"
+            item["bought_at"] = datetime.utcnow().isoformat()
+            item["order_id"]  = order.get("id", "")
+            _save_backlog(items)
+            _fund_log(f"Backlog manual buy: {qty} shares of {ticker}")
+            _log_portfolio_action(ticker, "BUY", qty, price, item.get("signal", "Buy"),
+                                  reasoning=item.get("reason", ""), order_id=order.get("id", ""))
+            _send_discord_webhook(
+                title=f"📋 ELLIE Backlog Buy — {ticker}",
+                description=f"Manually purchased **{int(qty)} shares** of {ticker} from buy queue",
+                signal="Buy",
+            )
+            return {"ok": True, "order_id": order.get("id", "")}
+        except Exception as exc:
+            return {"ok": False, "message": str(exc)}
+
+    return await loop.run_in_executor(None, _do_buy)
+
+
+@app.delete("/fund/backlog/{item_id}")
+async def delete_backlog_item(item_id: str):
+    """Remove an item from the buy backlog."""
+    items = [b for b in _load_backlog() if b["id"] != item_id]
+    _save_backlog(items)
+    return {"ok": True}
+
+
+@app.post("/fund/backlog/clear")
+async def clear_backlog():
+    """Remove all pending backlog items."""
+    items = _load_backlog()
+    items = [b for b in items if b["status"] != "pending"]
+    _save_backlog(items)
     return {"ok": True}
 
 

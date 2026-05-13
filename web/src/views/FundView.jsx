@@ -153,13 +153,15 @@ export default function FundView() {
 
   // Local config (before launch)
   const [cfg, setCfg] = useState({
-    llm_provider:    'google',
-    deep_think_llm:  'gemini-2.5-pro',
-    quick_think_llm: 'gemini-2.5-flash',
-    initial_stocks:  5,
-    position_pct:    5.0,
+    llm_provider:     'google',
+    deep_think_llm:   'gemini-2.5-pro',
+    quick_think_llm:  'gemini-2.5-flash',
+    initial_stocks:   5,
+    position_pct:     5.0,
     max_position_pct: 15.0,
-    weekly_new_buy:  true,
+    weekly_new_buy:   true,
+    investment_style: 'mixed',
+    discovery_count:  1,
   })
 
   const load = useCallback(async () => {
@@ -281,6 +283,24 @@ export default function FundView() {
       showMsg('Configuration saved.')
       load()
     } catch { showMsg('Error saving config', true) }
+    finally { setBusy(false) }
+  }
+
+  const handleDiscover = async () => {
+    if (!window.confirm(
+      `ELLIE will search for ${cfg.discovery_count} new stock(s) to buy right now.\n\nThis runs AI analysis and places real orders. Continue?`
+    )) return
+    setBusy(true)
+    try {
+      const r = await fetch('/fund/discover', { method: 'POST' })
+      const d = await r.json()
+      if (d.ok) {
+        showMsg(`Discovery started — ELLIE is searching for ${cfg.discovery_count} new position(s). Check Discord for results.`)
+        setTimeout(load, 5000)
+      } else {
+        showMsg(d.detail || 'Discovery failed', true)
+      }
+    } catch { showMsg('Network error', true) }
     finally { setBusy(false) }
   }
 
@@ -481,6 +501,32 @@ export default function FundView() {
                 </span>
               </label>
             </div>
+
+            <div className={styles.configField}>
+              <label className={styles.configLabel}>Investment Style</label>
+              <select
+                className={styles.select}
+                value={cfg.investment_style}
+                onChange={e => setCfg(c => ({ ...c, investment_style: e.target.value }))}
+              >
+                <option value="longterm">Long Term (1–5+ years)</option>
+                <option value="shortterm">Short Term (days–weeks)</option>
+                <option value="mixed">Mixed (balanced)</option>
+              </select>
+            </div>
+
+            <div className={styles.configField}>
+              <label className={styles.configLabel}>
+                Stocks to Buy per Discovery: <strong>{cfg.discovery_count}</strong>
+              </label>
+              <input
+                type="range" min={1} max={5} step={1}
+                value={cfg.discovery_count}
+                className={styles.slider}
+                onChange={e => setCfg(c => ({ ...c, discovery_count: parseInt(e.target.value) }))}
+              />
+              <div className={styles.sliderTicks}><span>1</span><span>5</span></div>
+            </div>
           </div>
 
           <div className={styles.launchWarning}>
@@ -535,6 +581,13 @@ export default function FundView() {
               disabled={busy}
             >
               🔄 Run Daily Review Now
+            </button>
+            <button
+              className={[styles.controlBtn, styles.discoverBtn].join(' ')}
+              onClick={handleDiscover}
+              disabled={busy}
+            >
+              🔍 Find &amp; Buy Stocks
             </button>
           </div>
 
@@ -591,6 +644,32 @@ export default function FundView() {
                     {cfg.weekly_new_buy ? 'Enabled' : 'Disabled'}
                   </span>
                 </label>
+              </div>
+
+              <div className={styles.configField}>
+                <label className={styles.configLabel}>Investment Style</label>
+                <select
+                  className={styles.select}
+                  value={cfg.investment_style}
+                  onChange={e => setCfg(c => ({ ...c, investment_style: e.target.value }))}
+                >
+                  <option value="longterm">Long Term (1–5+ years)</option>
+                  <option value="shortterm">Short Term (days–weeks)</option>
+                  <option value="mixed">Mixed (balanced)</option>
+                </select>
+              </div>
+
+              <div className={styles.configField}>
+                <label className={styles.configLabel}>
+                  Stocks to Buy per Discovery: <strong>{cfg.discovery_count}</strong>
+                </label>
+                <input
+                  type="range" min={1} max={5} step={1}
+                  value={cfg.discovery_count}
+                  className={styles.slider}
+                  onChange={e => setCfg(c => ({ ...c, discovery_count: parseInt(e.target.value) }))}
+                />
+                <div className={styles.sliderTicks}><span>1</span><span>5</span></div>
               </div>
             </div>
             <button
