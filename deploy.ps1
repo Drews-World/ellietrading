@@ -36,16 +36,15 @@ if ($deployFrontend) {
     Write-Host "Build complete." -ForegroundColor Green
 }
 
-# 2. Upload api.py
+# 2. Upload backend files
 if ($deployBackend) {
     Write-Host ""
-    Write-Host "Uploading api.py..." -ForegroundColor Yellow
+    Write-Host "Uploading backend files..." -ForegroundColor Yellow
     scp -i $KEY -o StrictHostKeyChecking=no "$PSScriptRoot\api.py" "${SERVER}:${APP}/api.py"
-    if ($LASTEXITCODE -ne 0) {
-        Write-Host "api.py upload failed." -ForegroundColor Red
-        exit 1
-    }
-    Write-Host "api.py uploaded." -ForegroundColor Green
+    if ($LASTEXITCODE -ne 0) { Write-Host "api.py upload failed." -ForegroundColor Red; exit 1 }
+    scp -i $KEY -o StrictHostKeyChecking=no "$PSScriptRoot\alpaca_client.py" "${SERVER}:${APP}/alpaca_client.py"
+    if ($LASTEXITCODE -ne 0) { Write-Host "alpaca_client.py upload failed." -ForegroundColor Red; exit 1 }
+    Write-Host "Backend files uploaded." -ForegroundColor Green
 }
 
 # 3. Upload frontend dist + fix permissions
