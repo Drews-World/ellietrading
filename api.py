@@ -2602,6 +2602,13 @@ async def alpaca_account():
     return alpaca_client.get_account()
 
 
+@app.get("/alpaca/pnl")
+async def alpaca_pnl(period: str = "30d"):
+    """Return P&L for a given period: today | 7d | 30d | 1y | all"""
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, alpaca_client.get_pnl, period)
+
+
 @app.get("/alpaca/positions")
 async def alpaca_positions():
     return alpaca_client.get_positions()

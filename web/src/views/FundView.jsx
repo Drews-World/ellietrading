@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
 import styles from './FundView.module.css'
+import PnlCard from '../components/PnlCard'
 
 // Discord color int → CSS hex
 const discordColor = (n) => n ? `#${(n >>> 0).toString(16).padStart(6, '0')}` : '#5865f2'
@@ -399,17 +400,7 @@ export default function FundView() {
           <div className={styles.metricLabel}>Portfolio Value</div>
           <div className={styles.metricValue}>{fmtD(portfolioValue)}</div>
         </div>
-        <div className={styles.metricCard}>
-          <div className={styles.metricLabel}>Today's P&amp;L</div>
-          <div className={[styles.metricValue, todayPnl != null ? (todayPnl >= 0 ? styles.green : styles.red) : ''].join(' ')}>
-            {todayPnl != null ? `${todayPnl >= 0 ? '+' : ''}$${fmt(todayPnl)}` : '—'}
-            {todayPnlPct != null && (
-              <span style={{ fontSize: '0.8em', marginLeft: 6, opacity: 0.8 }}>
-                ({todayPnlPct >= 0 ? '+' : ''}{fmt(todayPnlPct)}%)
-              </span>
-            )}
-          </div>
-        </div>
+        <PnlCard cardClassName={styles.metricCard} />
         <div className={styles.metricCard}>
           <div className={styles.metricLabel}>Cash Available</div>
           <div className={styles.metricValue}>{fmtD(cash)}</div>

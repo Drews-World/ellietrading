@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
 import styles from './PublicView.module.css'
+import PnlCard from '../components/PnlCard'
 
 function fmtMoney(n) {
   if (n == null) return '—'
@@ -99,16 +100,7 @@ export default function PublicView({ onLoginClick }) {
                 <span className={styles.metricLabel}>Portfolio Value</span>
                 <span className={styles.metricValue}>{fmtMoney(equity)}</span>
               </div>
-              <div className={styles.metricCard}>
-                <span className={styles.metricLabel}>Today's P&amp;L</span>
-                <span className={[
-                  styles.metricValue,
-                  dayPnl >= 0 ? styles.green : styles.red,
-                ].join(' ')}>
-                  {fmtMoney(dayPnl)}
-                  <span className={styles.metricSub}>{fmtPct(dayPnlPct)}</span>
-                </span>
-              </div>
+              <PnlCard cardClassName={styles.metricCard} />
               <div className={styles.metricCard}>
                 <span className={styles.metricLabel}>Cash Available</span>
                 <span className={styles.metricValue}>{fmtMoney(cash)}</span>

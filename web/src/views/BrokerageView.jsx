@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react'
 import styles from './BrokerageView.module.css'
+import PnlCard from '../components/PnlCard'
 
 const fmt  = (n, dec = 2) => n == null ? '—' : Number(n).toLocaleString('en-US', { minimumFractionDigits: dec, maximumFractionDigits: dec })
 const fmtD = (n) => n == null ? '—' : `$${fmt(n)}`
@@ -124,15 +125,10 @@ export default function BrokerageView() {
       {/* ── Account metrics ── */}
       {account && (
         <div className={styles.metricsRow}>
-          <MetricCard label="Portfolio Value"  value={fmtD(account.portfolio_value)} />
-          <MetricCard label="Cash"             value={fmtD(account.cash)} />
-          <MetricCard label="Buying Power"     value={fmtD(account.buying_power)} />
-          <MetricCard
-            label="Today's P&L"
-            value={`${todayPnl >= 0 ? '+' : ''}${fmtD(todayPnl)}`}
-            sub={pct(todayPnlPct)}
-            color={todayPnl >= 0 ? 'green' : 'red'}
-          />
+          <MetricCard label="Portfolio Value" value={fmtD(account.portfolio_value)} />
+          <MetricCard label="Cash"            value={fmtD(account.cash)} />
+          <MetricCard label="Buying Power"    value={fmtD(account.buying_power)} />
+          <PnlCard />
         </div>
       )}
 

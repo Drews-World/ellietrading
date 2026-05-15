@@ -8,9 +8,12 @@ Credentials are read from environment variables:
   APCA_BASE_URL         — defaults to https://paper-api.alpaca.markets
 """
 
-import os
+import json
 import math
+import os
 import logging
+import urllib.request
+import urllib.parse
 from typing import Optional
 
 logger = logging.getLogger(__name__)
@@ -374,3 +377,68 @@ def calculate_position_size(
     except Exception as exc:
         logger.error("calculate_position_size(%s) failed: %s", symbol, exc)
         return 0.0
+
+
+# ---------------------------------------------------------------------------
+# Portfolio P&L by period
+# ---------------------------------------------------------------------------
+
+def get_pnl(period: str = "30d") -> dict:
+    """
+    Return cumulative P&L for a given look-back period.
+
+    period: "today" | "7d" | "30d" | "1y" | "all"
+    Returns {pnl, pnl_pct, period}  — values are None on failure.
+    """
+    empty = {"pnl": None, "pnl_pct": None, "period": period}
+
+    try:
+        # Today: use the real-time account values (already computed there)
+        if period == "today":
+            acct = get_account()
+            return {
+                "pnl":     acct.get("pnl_today"),
+                "pnl_pct": acct.get("pnl_today_pct"),
+                "period":  "today",
+            }
+
+        api_key    = os.getenv("APCA_API_KEY_ID", "")
+        api_secret = os.getenv("APCA_API_SECRET_KEY", "")
+        base_url   = os.getenv("APCA_BASE_URL", "https://paper-api.alpaca.markets").rstrip("/")
+
+        if not api_key or not api_secret:
+            return empty
+
+        alpaca_period = {"7d": "1W", "30d": "1M", "1y": "1A", "all": "5A"}.get(period, "1M")
+
+        params = urllib.parse.urlencode({
+            "period":              alpaca_period,
+            "timeframe":           "1D",
+            "intraday_reporting":  "market_hours",
+            "pnl_reset":           "no_reset" if period == "all" else "per_period",
+        })
+        url = f"{base_url}/v2/account/portfolio/history?{params}"
+        req = urllib.request.Request(url, headers={
+            "APCA-API-KEY-ID":     api_key,
+            "APCA-API-SECRET-KEY": api_secret,
+        })
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read())
+
+        equity     = data.get("equity") or []
+        base_value = data.get("base_value") or 0
+
+        # Drop trailing None entries (market not yet open / data not available)
+        valid = [e for e in equity if e is not None]
+        if not valid or not base_value:
+            return empty
+
+        end_eq  = valid[-1]
+        pnl     = round(end_eq - base_value, 2)
+        pnl_pct = round(pnl / base_value * 100, 4) if base_value else None
+
+        return {"pnl": pnl, "pnl_pct": pnl_pct, "period": period}
+
+    except Exception as exc:
+        logger.error("get_pnl(%s) failed: %s", period, exc)
+        return empty
