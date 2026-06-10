@@ -223,6 +223,7 @@ def _load_fund() -> dict:
             "auto_buy_backlog": False,
             "rebalance_to_buy": True,
             "rebalance_max_pct": 25.0,
+            "cash_reserve_pct": 10.0,
         },
         "log": [],
     }
@@ -370,6 +371,7 @@ class FundConfig(BaseModel):
     auto_buy_backlog: bool = False     # auto-execute backlog buys when cash becomes available
     rebalance_to_buy: bool = True      # sell weakest holdings to fund new conviction buys
     rebalance_max_pct: float = 25.0    # max % of portfolio sellable per rebalance pass
+    cash_reserve_pct: float = 10.0     # % of portfolio kept as cash for future trades
 
 
 # ── Settings endpoints ────────────────────────────────────────────────────────
@@ -1338,47 +1340,80 @@ def _raise_cash(target: float, cfg: dict, exclude: set = None, context: str = ""
     return raised
 
 
+def _cash_reserve(portfolio_value: float, cfg: dict, signal: str = "") -> float:
+    """Dollars the fund keeps untouchable so future opportunities can always
+    be funded. A Strong Buy — the closest thing to 'the return is basically
+    guaranteed' that exists — may dip into half the reserve; nothing drains it."""
+    reserve = portfolio_value * float(cfg.get("cash_reserve_pct", 10.0)) / 100.0
+    sig = (signal or "").upper()
+    if "STRONG" in sig and "BUY" in sig:
+        reserve *= 0.5
+    return reserve
+
+
 def _fund_buy_or_backlog(ticker: str, qty: float, price, signal: str, cfg: dict,
                           source: str, reason: str = '', raw_decision: str = '') -> tuple:
     """
-    Attempt to buy qty shares of ticker.
-    If cash is insufficient, first try selling weakest holdings to fund the
-    buy (rebalance_to_buy); only when that can't cover it, queue in the
-    backlog instead. Returns (bought: bool, order: dict | None).
+    Attempt to buy qty shares of ticker, sized against what's actually in
+    the account:
+      - spendable = cash − reserve (the reserve stays for future trades)
+      - short on spendable → rebalance (sell weakest holdings) first
+      - still short → downsize the buy to what's affordable
+      - remainder too small to matter → backlog instead
+    Returns (bought: bool, order: dict | None).
     """
+    import math as _math
     import time as _time
 
     if qty <= 0:
         return False, None
 
-    dollar_needed = qty * float(price or 0) if price else 0
+    px = float(price or 0)
+    dollar_needed = qty * px if px else 0
 
-    # Cash gate — never buy on margin or with negative cash
-    try:
-        account = alpaca_client.get_account()
-        cash = float(account.get("cash", 0))
-    except Exception:
-        cash = 0
+    def _account_state():
+        try:
+            account = alpaca_client.get_account()
+            return (float(account.get("cash", 0)),
+                    float(account.get("portfolio_value", 0)))
+        except Exception:
+            return 0.0, 0.0
 
-    if cash <= 0 or (dollar_needed > 0 and cash < dollar_needed):
+    cash, portfolio_value = _account_state()
+    reserve = _cash_reserve(portfolio_value, cfg, signal)
+    spendable = cash - reserve
+
+    if dollar_needed > 0 and spendable < dollar_needed:
         # Rebalance-to-buy: a new conviction buy may bump the weakest holding.
-        if cfg.get("rebalance_to_buy", True) and dollar_needed > 0:
-            shortfall = dollar_needed - cash  # negative cash widens the gap
+        if cfg.get("rebalance_to_buy", True):
+            shortfall = dollar_needed - spendable
             raised = _raise_cash(shortfall * 1.02, cfg, exclude={ticker},
                                  context=f"to buy {ticker}")
             if raised > 0:
                 for _ in range(6):  # give market sells ~18s to settle
                     _time.sleep(3)
-                    try:
-                        cash = float(alpaca_client.get_account().get("cash", 0))
-                    except Exception:
-                        break
-                    if cash > 0 and cash >= dollar_needed:
+                    cash, portfolio_value = _account_state()
+                    spendable = cash - _cash_reserve(portfolio_value, cfg, signal)
+                    if spendable >= dollar_needed:
                         break
 
-    if cash <= 0 or (dollar_needed > 0 and cash < dollar_needed):
+    # Downsize rather than skip: buying 60% of the intended position beats
+    # buying none — but a sliver isn't worth the slot, so floor it.
+    if dollar_needed > 0 and spendable < dollar_needed and px > 0:
+        affordable_qty = float(_math.floor(max(spendable, 0) / px))
+        min_dollars = max(500.0, dollar_needed * 0.25)
+        if affordable_qty > 0 and affordable_qty * px >= min_dollars:
+            _fund_log(
+                f"Downsized {ticker} buy {qty:g} → {affordable_qty:g} shares to keep "
+                f"${_cash_reserve(portfolio_value, cfg, signal):,.0f} cash reserve"
+            )
+            qty = affordable_qty
+            dollar_needed = qty * px
+
+    if spendable <= 0 or (dollar_needed > 0 and spendable < dollar_needed):
         _add_to_backlog(ticker, signal, price, qty, dollar_needed, source, reason, raw_decision)
-        _fund_log(f"Backlog: insufficient cash (${cash:.0f}) for {ticker} (${dollar_needed:.0f})")
+        _fund_log(f"Backlog: insufficient spendable cash (${spendable:,.0f} after "
+                  f"reserve) for {ticker} (${dollar_needed:,.0f})")
         return False, None
 
     try:
@@ -1394,7 +1429,8 @@ def _fund_buy_or_backlog(ticker: str, qty: float, price, signal: str, cfg: dict,
 
 
 def _run_backlog_autobuy():
-    """Execute pending backlog buys when cash is available. Called by scheduler."""
+    """Execute pending backlog buys when cash is available — without dipping
+    into the standing cash reserve. Called by scheduler."""
     items = _load_backlog()
     pending = [b for b in items if b["status"] == "pending"]
     if not pending:
@@ -1402,13 +1438,16 @@ def _run_backlog_autobuy():
     try:
         account = alpaca_client.get_account()
         cash = float(account.get("cash", 0))
+        portfolio_value = float(account.get("portfolio_value", 0))
     except Exception:
         return
 
+    cfg = _load_fund().get("config", {})
     bought_count = 0
     for item in pending:
         dollar_needed = float(item.get("dollar_amount", 0))
-        if dollar_needed <= 0 or cash < dollar_needed:
+        reserve = _cash_reserve(portfolio_value, cfg, item.get("signal", ""))
+        if dollar_needed <= 0 or (cash - reserve) < dollar_needed:
             continue
 
         ticker = item["ticker"]
