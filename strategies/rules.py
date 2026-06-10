@@ -28,27 +28,35 @@ DEFAULT_CONFIG = {
     "max_position_pct": 20.0,  # notional cap per position, % of equity
     "max_risk_on": 2,          # max concurrent positions within RISK_ON_GROUP
     "atr_window": 14,
+    # Tuned 2026-06-10 via scripts/tune_strategies.py (3y, 70/30 IS/OOS split;
+    # full numbers in scripts/tune_results.json). Only trend following
+    # validated out-of-sample, so only it is enabled by default. The other two
+    # carry their least-bad parameters in case they're re-enabled, but as
+    # specified they did NOT earn the right to trade — every mean-reversion
+    # variant lost money on both windows, and every breakout variant that
+    # looked good in-sample collapsed out-of-sample (classic curve fit).
     "strategies": {
         "mean_reversion": {
-            "enabled": True,
+            "enabled": False,        # all 12 tuned variants OOS-negative
             "symbols": ["SPY", "QQQ"],
             "timeframe": "15Min",
             "lookback": 20,          # z-score window
-            "z_entry": -2.0,         # enter when stretched this far below mean
+            "z_entry": -2.5,         # best variant found (still PF 0.84 OOS)
             "z_exit": 0.0,           # exit when price reverts to the mean
+            "stop_atr_mult": 3.0,    # wider stop helped; dips run past 2xATR
             "trend_filter_bars": 200,  # only buy dips in an uptrend
             "max_hold_bars": 78,     # ~3 trading days of 15-min bars
         },
         "momentum_breakout": {
-            "enabled": True,
+            "enabled": False,        # IS winners (PF 1.96) went PF 0.2-0.4 OOS
             "symbols": ["BTC/USD"],
             "timeframe": "1Hour",
-            "entry_lookback": 55,    # Donchian breakout window
-            "exit_lookback": 20,     # Donchian exit window
+            "entry_lookback": 168,   # best in-sample (1-week breakout)
+            "exit_lookback": 40,     # Donchian exit window
             "trend_filter_bars": 200,
         },
         "trend_following": {
-            "enabled": True,
+            "enabled": True,         # validated: PF 1.29 IS, PF 2.68 OOS
             "symbols": ["GLD", "USO"],
             "timeframe": "4Hour",
             "fast": 20,
