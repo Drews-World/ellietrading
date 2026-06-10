@@ -270,9 +270,10 @@ class StrategyEngine:
 
         atr_value = self._atr(df, cfg["atr_window"])
         price = data.latest_price(symbol) or float(df.iloc[i]["close"])
+        stop_mult = float(params.get("stop_atr_mult", cfg["stop_atr_mult"]))
         qty = risk.position_size(
             equity, price, atr_value,
-            risk_pct=cfg["risk_pct"], stop_atr_mult=cfg["stop_atr_mult"],
+            risk_pct=cfg["risk_pct"], stop_atr_mult=stop_mult,
             max_position_pct=cfg["max_position_pct"],
             fractional=data.is_crypto(symbol),
         )
@@ -291,7 +292,7 @@ class StrategyEngine:
             "entry_price": price,
             "entry_time": _now(),
             "atr": round(atr_value, 4),
-            "stop": risk.stop_price(price, atr_value, cfg["stop_atr_mult"]),
+            "stop": risk.stop_price(price, atr_value, stop_mult),
             "bars_held": 0,
             "order_id": order.get("id"),
         }

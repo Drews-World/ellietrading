@@ -109,6 +109,8 @@ def _backtest_strategy(name, spec, params, config, years, initial_equity,
     slip = slippage_bps / 10_000.0
     end = datetime.now(timezone.utc)
     days = int(years * 365)
+    # Per-strategy stop override (mean reversion wants wider stops than trend).
+    stop_mult = float(params.get("stop_atr_mult", config["stop_atr_mult"]))
 
     # Prepare per-symbol frames once (vectorized), then walk a merged timeline.
     frames: dict[str, pd.DataFrame] = {}
@@ -164,7 +166,7 @@ def _backtest_strategy(name, spec, params, config, years, initial_equity,
                 qty = risk.position_size(
                     last_equity, fill, atr_value,
                     risk_pct=config["risk_pct"],
-                    stop_atr_mult=config["stop_atr_mult"],
+                    stop_atr_mult=stop_mult,
                     max_position_pct=config["max_position_pct"],
                     fractional=data.is_crypto(symbol),
                 )
@@ -172,7 +174,7 @@ def _backtest_strategy(name, spec, params, config, years, initial_equity,
                     cash -= qty * fill
                     positions[symbol] = {
                         "qty": qty, "entry_price": fill, "entry_time": str(ts),
-                        "stop": risk.stop_price(fill, atr_value, config["stop_atr_mult"]),
+                        "stop": risk.stop_price(fill, atr_value, stop_mult),
                         "bars_held": 0,
                     }
                     pos = positions[symbol]

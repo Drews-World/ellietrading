@@ -221,6 +221,8 @@ def _load_fund() -> dict:
             "investment_style": "mixed",
             "discovery_count": 1,
             "auto_buy_backlog": False,
+            "rebalance_to_buy": True,
+            "rebalance_max_pct": 25.0,
         },
         "log": [],
     }
@@ -366,6 +368,8 @@ class FundConfig(BaseModel):
     investment_style: str = "mixed"   # "longterm" | "shortterm" | "mixed"
     discovery_count: int = 1          # how many new stocks to find+buy on manual discover
     auto_buy_backlog: bool = False     # auto-execute backlog buys when cash becomes available
+    rebalance_to_buy: bool = True      # sell weakest holdings to fund new conviction buys
+    rebalance_max_pct: float = 25.0    # max % of portfolio sellable per rebalance pass
 
 
 # ── Settings endpoints ────────────────────────────────────────────────────────
@@ -1225,13 +1229,125 @@ def _add_to_backlog(ticker: str, signal: str, price, qty: float, dollar_amount: 
     )
 
 
+def _engine_owned_symbols() -> set:
+    """Symbols currently held by the deterministic strategy engine. The fund
+    and the engine share one Alpaca account but keep separate books — the
+    fund must never liquidate the engine's positions to free cash."""
+    try:
+        from strategies.engine import engine as _strategy_engine_ref
+        return set(_strategy_engine_ref.get_state().get("positions", {}).keys())
+    except Exception:
+        return set()
+
+
+def _position_age_days(symbol: str) -> Optional[float]:
+    """Days since the most recent BUY of symbol per the portfolio history.
+    None when unknown (position predates the history file)."""
+    if not PORTFOLIO_HISTORY_FILE.exists():
+        return None
+    try:
+        history = json.loads(PORTFOLIO_HISTORY_FILE.read_text())
+        for entry in history:  # newest first
+            if entry.get("ticker") == symbol and entry.get("action") in ("BUY", "ADD"):
+                bought = datetime.fromisoformat(entry["ts"].replace("Z", ""))
+                return (datetime.utcnow() - bought).total_seconds() / 86400.0
+    except Exception:
+        pass
+    return None
+
+
+def _raise_cash(target: float, cfg: dict, exclude: set = None, context: str = "",
+                respect_min_hold: bool = True) -> float:
+    """Sell the weakest eligible holdings to raise ~`target` dollars of cash.
+
+    Eligibility: not in `exclude`, not engine-owned, and (when
+    respect_min_hold) held at least min_hold_days — unknown age counts as
+    eligible so legacy positions can still fund repairs. Weakest first
+    (lowest unrealized P&L %): laggards get trimmed, winners keep running.
+    Total selling per call is capped at rebalance_max_pct% of portfolio.
+
+    Returns estimated proceeds submitted (orders may take seconds to settle).
+    """
+    import math
+
+    if target <= 0:
+        return 0.0
+    exclude = set(exclude or ())
+    try:
+        account = alpaca_client.get_account()
+        positions = alpaca_client.get_positions()
+    except Exception as exc:
+        _fund_log(f"Rebalance: account/positions unavailable — {exc}")
+        return 0.0
+
+    portfolio_value = float(account.get("portfolio_value") or 0)
+    cap = portfolio_value * float(cfg.get("rebalance_max_pct", 25.0)) / 100.0
+    budget = min(target, cap) if cap > 0 else target
+    min_hold = int(cfg.get("min_hold_days", 14))
+    engine_syms = _engine_owned_symbols()
+
+    candidates = []
+    for p in positions:
+        sym = p.get("symbol", "")
+        if sym in exclude or sym in engine_syms:
+            continue
+        if respect_min_hold:
+            age = _position_age_days(sym)
+            if age is not None and age < min_hold:
+                continue
+        candidates.append(p)
+    # Weakest performers first.
+    candidates.sort(key=lambda p: float(p.get("unrealized_plpc") or 0))
+
+    raised, sold_lines = 0.0, []
+    for p in candidates:
+        if raised >= budget:
+            break
+        sym = p["symbol"]
+        price = float(p.get("current_price") or 0)
+        qty_held = float(p.get("qty") or 0)
+        if price <= 0 or qty_held <= 0:
+            continue
+        sell_qty = min(qty_held, float(math.ceil((budget - raised) / price)))
+        # Don't leave dust positions behind.
+        if (qty_held - sell_qty) * price < 500:
+            sell_qty = qty_held
+        order = alpaca_client.submit_order(sym, "sell", qty=sell_qty)
+        if order.get("error"):
+            _fund_log(f"Rebalance: sell {sell_qty} {sym} failed — {order['error']}")
+            continue
+        proceeds = sell_qty * price
+        raised += proceeds
+        upl_pct = float(p.get("unrealized_plpc") or 0) * 100
+        sold_lines.append(f"• **{sym}** ×{sell_qty:g} (~${proceeds:,.0f}, was {upl_pct:+.1f}%)")
+        _log_portfolio_action(sym, "SELL", sell_qty, price, "Rebalance",
+                              reasoning=f"Freeing cash {context}".strip(),
+                              order_id=order.get("id", ""))
+        _fund_log(f"Rebalance: sold {sell_qty:g} {sym} (~${proceeds:,.0f}) {context}")
+
+    if sold_lines:
+        _send_discord_webhook(
+            title="♻️ ELLIE Rebalance — freed cash",
+            description=(f"Sold weakest holdings {context}:\n" + "\n".join(sold_lines)
+                         + f"\n\nEstimated proceeds: **${raised:,.0f}**"),
+            signal="Sell",
+        )
+    elif target > 0:
+        _fund_log(f"Rebalance: no eligible positions to sell {context} "
+                  f"(engine-owned, excluded, or inside min-hold)")
+    return raised
+
+
 def _fund_buy_or_backlog(ticker: str, qty: float, price, signal: str, cfg: dict,
                           source: str, reason: str = '', raw_decision: str = '') -> tuple:
     """
     Attempt to buy qty shares of ticker.
-    If cash is insufficient, queue in buy backlog instead.
-    Returns (bought: bool, order: dict | None).
+    If cash is insufficient, first try selling weakest holdings to fund the
+    buy (rebalance_to_buy); only when that can't cover it, queue in the
+    backlog instead. Returns (bought: bool, order: dict | None).
     """
+    import time as _time
+
     if qty <= 0:
         return False, None
 
@@ -1243,6 +1359,22 @@ def _fund_buy_or_backlog(ticker: str, qty: float, price, signal: str, cfg: dict,
         cash = float(account.get("cash", 0))
     except Exception:
         cash = 0
+
+    if cash <= 0 or (dollar_needed > 0 and cash < dollar_needed):
+        # Rebalance-to-buy: a new conviction buy may bump the weakest holding.
+        if cfg.get("rebalance_to_buy", True) and dollar_needed > 0:
+            shortfall = dollar_needed - cash  # negative cash widens the gap
+            raised = _raise_cash(shortfall * 1.02, cfg, exclude={ticker},
+                                 context=f"to buy {ticker}")
+            if raised > 0:
+                for _ in range(6):  # give market sells ~18s to settle
+                    _time.sleep(3)
+                    try:
+                        cash = float(alpaca_client.get_account().get("cash", 0))
+                    except Exception:
+                        break
+                    if cash > 0 and cash >= dollar_needed:
+                        break
 
     if cash <= 0 or (dollar_needed > 0 and cash < dollar_needed):
         _add_to_backlog(ticker, signal, price, qty, dollar_needed, source, reason, raw_decision)
@@ -1907,9 +2039,25 @@ def _run_daily_review():
     Runs in thread pool — completes in seconds.
     """
     try:
+        import time as _time
+
         _fund_log("Daily review started")
 
         account   = alpaca_client.get_account()
+        cash      = float(account.get("cash") or 0)
+
+        # Negative-cash repair: the fund must not sit on margin. Sell the
+        # weakest holdings (min-hold waived — repairing a rule violation
+        # outranks the hold period) until cash is back above zero.
+        cfg = _load_fund().get("config", {})
+        if cash < 0 and cfg.get("rebalance_to_buy", True):
+            _fund_log(f"Cash repair: cash is ${cash:,.0f} — selling weakest holdings")
+            raised = _raise_cash(-cash * 1.02, cfg, context="(negative-cash repair)",
+                                 respect_min_hold=False)
+            if raised > 0:
+                _time.sleep(8)  # let market sells settle before the snapshot
+                account = alpaca_client.get_account()
+
         positions = alpaca_client.get_positions()
         now       = datetime.utcnow()
 
