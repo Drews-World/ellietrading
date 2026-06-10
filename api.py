@@ -1237,18 +1237,17 @@ def _fund_buy_or_backlog(ticker: str, qty: float, price, signal: str, cfg: dict,
 
     dollar_needed = qty * float(price or 0) if price else 0
 
-    # Cash gate
-    if dollar_needed > 0:
-        try:
-            account = alpaca_client.get_account()
-            cash = float(account.get("cash", 0))
-        except Exception:
-            cash = 0
+    # Cash gate — never buy on margin or with negative cash
+    try:
+        account = alpaca_client.get_account()
+        cash = float(account.get("cash", 0))
+    except Exception:
+        cash = 0
 
-        if cash < dollar_needed:
-            _add_to_backlog(ticker, signal, price, qty, dollar_needed, source, reason, raw_decision)
-            _fund_log(f"Backlog: insufficient cash (${cash:.0f}) for {ticker} (${dollar_needed:.0f})")
-            return False, None
+    if cash <= 0 or (dollar_needed > 0 and cash < dollar_needed):
+        _add_to_backlog(ticker, signal, price, qty, dollar_needed, source, reason, raw_decision)
+        _fund_log(f"Backlog: insufficient cash (${cash:.0f}) for {ticker} (${dollar_needed:.0f})")
+        return False, None
 
     try:
         order = alpaca_client.submit_order(ticker, "buy", qty=qty)
@@ -1976,6 +1975,357 @@ def _run_daily_review():
         )
 
 
+def _run_news_check():
+    """
+    Daily news scan on all open positions.
+
+    Sell logic:
+      - Position UP or flat  → sell immediately on Sell/Underweight signal (lock gains)
+      - Position NEGATIVE + catastrophic news (fraud, SEC, bankruptcy)
+                             → sell immediately regardless of P&L
+      - Position NEGATIVE + regular bad news
+                             → enter 'patient sell' mode:
+                               · Wait up to 5 days for a better exit
+                               · Sell early if price recovers ≥3% from flag price
+                               · Sell early if price drops another ≥5% (cut losses)
+                               · Sell unconditionally after 5 days
+
+    Add logic:
+      - Buy/Overweight signal + held ≥3 days → add shares (up to max_position_pct)
+
+    Anti-day-trade guard: 3-day cooldown per symbol between news-triggered trades.
+    """
+    import time as _time
+    import yfinance as yf
+    from tradingagents.llm_clients.factory import create_llm_client
+    from langchain_core.messages import HumanMessage
+
+    # ── helpers ──────────────────────────────────────────────────────────────
+    def _is_catastrophic(llm, symbol: str, news_reason: str) -> bool:
+        """Ask the LLM whether news is company-existential (fraud, SEC, bankruptcy…)."""
+        prompt = (
+            f"Is the following news about {symbol} catastrophic in the sense that it poses "
+            f"an existential or near-term severe risk to the company — such as confirmed fraud, "
+            f"SEC enforcement action, bankruptcy filing, criminal investigation, major product recall "
+            f"with liability, or delisting?\n\n"
+            f"News: {news_reason}\n\n"
+            f"Reply with ONLY: CATASTROPHIC or NOT_CATASTROPHIC"
+        )
+        try:
+            r = llm.invoke([HumanMessage(content=prompt)])
+            return r.content.strip().upper().startswith("CATASTROPHIC")
+        except Exception:
+            return False  # default: don't panic-sell
+
+    def _execute_sell(symbol, pos, price, signal, raw_decision, days_held, unrl_pct, label, news_reason):
+        alpaca_client.close_position(symbol)
+        _fund_log(f"News sell [{label}]: closed {symbol} after {days_held}d | P&L {unrl_pct:+.1f}% — {news_reason}")
+        _log_portfolio_action(symbol, "SELL", pos.get("qty"), price, signal,
+                              reasoning=f"[NEWS/{label}] {news_reason}\n{raw_decision}")
+        _send_discord_webhook(
+            title=f"📰 News Sell ({label}) — {symbol}",
+            description=(
+                f"**Signal:** {signal}\n"
+                f"**News:** {news_reason}\n"
+                f"**Held:** {days_held}d  |  P&L: {unrl_pct:+.1f}%"
+            ),
+            signal="sell",
+        )
+
+    # ── main body ─────────────────────────────────────────────────────────────
+    try:
+        fund = _load_fund()
+        cfg  = fund["config"]
+        positions = alpaca_client.get_positions()
+        pos_by_symbol = {p.get("symbol", ""): p for p in positions}
+
+        now_dt       = datetime.utcnow()
+        provider     = cfg.get("llm_provider", "google")
+        quick_model  = cfg.get("quick_think_llm", "gemini-2.5-flash")
+        client       = create_llm_client(provider, quick_model)
+        llm          = client.get_llm()
+        news_actions = fund.get("news_trade_dates", {})    # {symbol: ISO ts}
+        patient_sells = fund.get("patient_sells", {})      # {symbol: {flagged_at, flagged_price, ...}}
+
+        # ── Step 1: resolve any existing patient-sell positions ────────────────
+        resolved = []
+        for symbol, ps in list(patient_sells.items()):
+            pos = pos_by_symbol.get(symbol)
+            if not pos:
+                # Position already gone
+                resolved.append(symbol)
+                continue
+            try:
+                flagged_price = float(ps.get("flagged_price", 0))
+                flagged_at    = datetime.fromisoformat(ps["flagged_at"])
+                days_waiting  = (now_dt - flagged_at).days
+                current_price = float(pos.get("current_price") or pos.get("avg_entry_price") or flagged_price)
+                unrl_pct      = float(pos.get("unrealized_plpc") or 0) * 100
+                news_reason   = ps.get("news_reason", "bad news")
+                days_held     = ps.get("days_held", 0)
+
+                pct_change = ((current_price - flagged_price) / flagged_price * 100) if flagged_price else 0
+
+                if pct_change >= 3.0:
+                    _fund_log(f"{symbol}: patient sell — price recovered {pct_change:+.1f}% → selling at better price")
+                    _execute_sell(symbol, pos, current_price, "Sell", ps.get("raw_decision", ""),
+                                  days_held, unrl_pct, "patient/recovered", news_reason)
+                    news_actions[symbol] = now_dt.isoformat()
+                    resolved.append(symbol)
+                elif pct_change <= -5.0:
+                    _fund_log(f"{symbol}: patient sell — price dropped another {pct_change:.1f}% → cutting losses")
+                    _execute_sell(symbol, pos, current_price, "Sell", ps.get("raw_decision", ""),
+                                  days_held, unrl_pct, "patient/cut-losses", news_reason)
+                    news_actions[symbol] = now_dt.isoformat()
+                    resolved.append(symbol)
+                elif days_waiting >= 5:
+                    _fund_log(f"{symbol}: patient sell — max wait reached ({days_waiting}d) → selling now")
+                    _execute_sell(symbol, pos, current_price, "Sell", ps.get("raw_decision", ""),
+                                  days_held, unrl_pct, "patient/timeout", news_reason)
+                    news_actions[symbol] = now_dt.isoformat()
+                    resolved.append(symbol)
+                else:
+                    _fund_log(f"{symbol}: patient sell — waiting ({days_waiting}d, {pct_change:+.1f}% from flag price)")
+                    _send_discord_webhook(
+                        title=f"⏳ Watching {symbol} for Exit",
+                        description=(
+                            f"**Day {days_waiting}/5** in patient-sell mode\n"
+                            f"Price vs flag: {pct_change:+.1f}%  |  P&L: {unrl_pct:+.1f}%\n"
+                            f"Will sell if: recovers +3% or drops -5% or 5 days pass"
+                        ),
+                        signal="",
+                    )
+            except Exception as exc:
+                _fund_log(f"{symbol}: patient sell check error — {exc}")
+
+        for sym in resolved:
+            patient_sells.pop(sym, None)
+
+        # ── Step 2: scan positions for new significant news ────────────────────
+        if not pos_by_symbol:
+            _fund_log("News check: no open positions")
+        else:
+            _fund_log(f"News check: scanning {len(pos_by_symbol)} position(s)…")
+
+            significant = []
+
+            for symbol, pos in pos_by_symbol.items():
+                # Skip if already in patient-sell mode
+                if symbol in patient_sells:
+                    continue
+
+                # 3-day cooldown
+                last_ts = news_actions.get(symbol, "")
+                if last_ts:
+                    try:
+                        if (now_dt - datetime.fromisoformat(last_ts)).days < 3:
+                            _fund_log(f"{symbol}: news cooldown — skipping")
+                            continue
+                    except Exception:
+                        pass
+
+                # Fetch headlines
+                try:
+                    t         = yf.Ticker(symbol)
+                    news_raw  = t.news or []
+                    headlines = [
+                        n.get("content", {}).get("title", "")
+                        for n in news_raw[:10]
+                        if n.get("content", {}).get("title", "")
+                    ]
+                    if not headlines:
+                        continue
+                    news_text = "\n".join(f"- {h}" for h in headlines[:8])
+                except Exception as exc:
+                    _fund_log(f"{symbol}: news fetch error — {exc}")
+                    continue
+
+                # Significance screen — also classifies direction so we don't
+                # trigger a sell-path analysis on positive news (or vice versa).
+                prompt = (
+                    f"You are a portfolio risk manager. A fund holds shares of {symbol}.\n"
+                    f"Review these recent news headlines and decide if any are significant enough "
+                    f"to warrant portfolio action (adding or reducing the position).\n\n"
+                    f"SIGNIFICANT means: earnings beat/miss, major analyst upgrade/downgrade "
+                    f"(≥$10 price-target change), M&A announcement, major regulatory action, "
+                    f"product recall, fraud/accounting concern, or macro shock specific to {symbol}.\n\n"
+                    f"NOT significant: routine coverage, minor commentary, general market/sector "
+                    f"pieces that don't specifically affect {symbol}.\n\n"
+                    f"If significant, also classify the sentiment direction:\n"
+                    f"  POSITIVE — news is clearly good for the stock (upgrade, beat, buyout premium, etc.)\n"
+                    f"  NEGATIVE — news is clearly bad (miss, downgrade, fraud, recall, etc.)\n"
+                    f"  MIXED    — meaningful news but direction is ambiguous\n\n"
+                    f"Headlines:\n{news_text}\n\n"
+                    f"Reply with ONLY one of:\n"
+                    f"- SIGNIFICANT_POSITIVE: [one sentence on the key event]\n"
+                    f"- SIGNIFICANT_NEGATIVE: [one sentence on the key event]\n"
+                    f"- SIGNIFICANT_MIXED: [one sentence on the key event]\n"
+                    f"- NOT_SIGNIFICANT"
+                )
+                try:
+                    response = llm.invoke([HumanMessage(content=prompt)])
+                    result   = response.content.strip().upper()
+                    if result.startswith("SIGNIFICANT"):
+                        # Parse direction
+                        if "POSITIVE" in result.split(":")[0]:
+                            direction = "positive"
+                        elif "NEGATIVE" in result.split(":")[0]:
+                            direction = "negative"
+                        else:
+                            direction = "mixed"
+                        reason = response.content.strip().split(":", 1)[-1].strip() if ":" in response.content else response.content.strip()
+                        _fund_log(f"{symbol}: significant {direction} news — {reason}")
+                        significant.append((symbol, pos, reason, direction))
+                except Exception as exc:
+                    _fund_log(f"{symbol}: news screen error — {exc}")
+                    continue
+
+            if not significant:
+                _fund_log("News check: no significant news found")
+            else:
+                _fund_log(f"News check: {len(significant)} position(s) flagged — running analysis…")
+
+                account         = alpaca_client.get_account()
+                portfolio_value = float(account.get("portfolio_value") or account.get("equity") or 0)
+                orders          = alpaca_client.get_orders(limit=50)
+
+                buy_dates: dict[str, datetime] = {}
+                for order in orders:
+                    if order.get("side") == "buy" and order.get("status") == "filled":
+                        sym = order.get("symbol", "")
+                        ts  = order.get("filled_at") or order.get("created_at") or ""
+                        if sym and ts:
+                            try:
+                                dt = datetime.fromisoformat(ts.replace("Z", ""))
+                                if sym not in buy_dates or dt < buy_dates[sym]:
+                                    buy_dates[sym] = dt
+                            except Exception:
+                                pass
+
+                for i, (symbol, pos, news_reason, news_direction) in enumerate(significant):
+                    if i > 0:
+                        _fund_log(f"Cooling down 60s before analyzing {symbol}…")
+                        _time.sleep(60)
+                    try:
+                        signal, raw_decision, price = _run_analysis_simple(symbol, cfg)
+                        _discord_analysis_embed(
+                            ticker=symbol, signal=signal, entry_price=price,
+                            reasoning=raw_decision,
+                            provider=cfg.get("llm_provider", "google"),
+                            date=now_dt.strftime("%Y-%m-%d"),
+                        )
+
+                        unrl_pct     = float(pos.get("unrealized_plpc") or 0) * 100
+                        market_value = float(pos.get("market_value") or 0)
+                        current_pct  = (market_value / portfolio_value * 100) if portfolio_value > 0 else 0
+                        first_buy    = buy_dates.get(symbol)
+                        days_held    = (now_dt - first_buy).days if first_buy else 999
+
+                        # Direction guard: don't act against the news sentiment.
+                        # Positive news → only act on Buy/Overweight signals.
+                        # Negative news → only act on Sell/Underweight signals.
+                        # Mixed news    → trust the full analysis signal either way.
+                        if news_direction == "positive" and signal in ("Sell", "Underweight"):
+                            _fund_log(f"{symbol}: positive news but signal={signal} — holding (news contradicts signal)")
+                            continue
+                        if news_direction == "negative" and signal in ("Buy", "Overweight"):
+                            _fund_log(f"{symbol}: negative news but signal={signal} — holding (news contradicts signal)")
+                            continue
+
+                        if signal in ("Sell", "Underweight"):
+                            if unrl_pct >= 0:
+                                # Up or flat → sell immediately, lock in gains
+                                _execute_sell(symbol, pos, price, signal, raw_decision,
+                                              days_held, unrl_pct, "immediate", news_reason)
+                                news_actions[symbol] = now_dt.isoformat()
+
+                            else:
+                                # Negative position — be patient unless catastrophic
+                                if _is_catastrophic(llm, symbol, news_reason):
+                                    _fund_log(f"{symbol}: catastrophic news — selling immediately despite loss")
+                                    _execute_sell(symbol, pos, price, signal, raw_decision,
+                                                  days_held, unrl_pct, "catastrophic", news_reason)
+                                    news_actions[symbol] = now_dt.isoformat()
+                                else:
+                                    # Enter patient-sell mode
+                                    patient_sells[symbol] = {
+                                        "flagged_at":    now_dt.isoformat(),
+                                        "flagged_price": price,
+                                        "news_reason":   news_reason,
+                                        "raw_decision":  raw_decision,
+                                        "signal":        signal,
+                                        "days_held":     days_held,
+                                        "unrl_pct_at_flag": unrl_pct,
+                                    }
+                                    _fund_log(
+                                        f"{symbol}: bad news but down {unrl_pct:.1f}% — entering patient-sell mode "
+                                        f"(will wait up to 5d for better price)"
+                                    )
+                                    _send_discord_webhook(
+                                        title=f"⏳ Patient Sell Queued — {symbol}",
+                                        description=(
+                                            f"**Signal:** {signal}  |  **P&L:** {unrl_pct:+.1f}%\n"
+                                            f"**News:** {news_reason}\n\n"
+                                            f"Position is negative — waiting up to 5 days for a better exit.\n"
+                                            f"Will sell early if price recovers +3% or drops another -5%."
+                                        ),
+                                        signal="",
+                                    )
+
+                        elif signal in ("Buy", "Overweight") and days_held >= 3:
+                            max_pct = cfg.get("max_position_pct", 15.0)
+                            if current_pct < max_pct:
+                                add_pct = min(cfg.get("position_pct", 5.0), max_pct - current_pct)
+                                qty     = alpaca_client.calculate_position_size(symbol, add_pct / 100)
+                                if qty > 0:
+                                    ok, order = _fund_buy_or_backlog(
+                                        symbol, qty, price, signal, cfg,
+                                        source="news", reason=news_reason, raw_decision=raw_decision,
+                                    )
+                                    if ok:
+                                        _fund_log(f"News add: +{qty} shares of {symbol} — {news_reason}")
+                                        _log_portfolio_action(symbol, "ADD", qty, price, signal,
+                                                              reasoning=f"[NEWS] {news_reason}\n{raw_decision}")
+                                        news_actions[symbol] = now_dt.isoformat()
+                                        _send_discord_webhook(
+                                            title=f"📰 News-Triggered Buy — {symbol}",
+                                            description=(
+                                                f"**Signal:** {signal}\n"
+                                                f"**News:** {news_reason}\n"
+                                                f"**Added:** {qty} shares at ~${price:.2f}"
+                                            ),
+                                            signal="buy",
+                                        )
+                                else:
+                                    _fund_log(f"{symbol}: news positive but at max position")
+                            else:
+                                _fund_log(f"{symbol}: news positive but at max position size")
+
+                        else:
+                            note = f"signal={signal}"
+                            if signal in ("Buy", "Overweight") and days_held < 3:
+                                note += f", only {days_held}d held (min 3d for adds)"
+                            _fund_log(f"{symbol}: significant news but holding — {note}")
+
+                    except Exception as exc:
+                        _fund_log(f"News analysis error for {symbol}: {exc}")
+                        continue
+
+        # Persist state
+        fund = _load_fund()
+        fund["news_trade_dates"] = news_actions
+        fund["patient_sells"]    = patient_sells
+        _save_fund(fund)
+        _fund_log("News check complete")
+
+    except Exception as exc:
+        _fund_log(f"News check error: {exc}")
+        _send_discord_webhook(
+            title="🚨 News Check Failed",
+            description=f"```{str(exc)[:800]}```",
+        )
+
+
 def _run_biweekly_analysis():
     """
     AI analysis of every held position + trade decisions.
@@ -2048,9 +2398,11 @@ def _run_biweekly_analysis():
                         add_pct = min(cfg.get("position_pct", 5.0), max_pct - current_pct)
                         qty = alpaca_client.calculate_position_size(symbol, add_pct / 100)
                         if qty > 0:
-                            alpaca_client.submit_order(symbol, "buy", qty=qty)
-                            _fund_log(f"Added {qty} shares to {symbol} after {days_held}d hold")
-                            _log_portfolio_action(symbol, "ADD", qty, price, signal, reasoning=raw_decision)
+                            ok, order = _fund_buy_or_backlog(symbol, qty, price, signal, cfg,
+                                                             source="biweekly", raw_decision=raw_decision)
+                            if ok:
+                                _fund_log(f"Added {qty} shares to {symbol} after {days_held}d hold")
+                                _log_portfolio_action(symbol, "ADD", qty, price, signal, reasoning=raw_decision)
                         else:
                             _fund_log(f"Holding {symbol} — at max position")
                     else:
@@ -2210,10 +2562,8 @@ async def _fund_scheduler():
                     _save_fund(fund)
                     await loop.run_in_executor(_fund_executor, _run_daily_review)
 
-            # Catalyst event check (runs daily after market close alongside daily review)
+            # Catalyst event check + news check (run daily after market close)
             fund = _load_fund()
-            next_daily = fund.get("next_daily_review")  # freshly set by _run_daily_review above
-            # Fire catalyst check whenever market close has passed today (20:00 UTC) and not yet fired
             market_close_today = now.replace(hour=20, minute=0, second=0, microsecond=0)
             last_cat_check = fund.get("last_catalyst_check", "")
             last_cat_date  = last_cat_check[:10] if last_cat_check else ""
@@ -2221,6 +2571,15 @@ async def _fund_scheduler():
                 fund["last_catalyst_check"] = now.isoformat()
                 _save_fund(fund)
                 await loop.run_in_executor(_fund_executor, _run_catalyst_check)
+
+            # Daily news check on open positions (runs once per day at market close)
+            fund = _load_fund()
+            last_news_check = fund.get("last_news_check", "")
+            last_news_date  = last_news_check[:10] if last_news_check else ""
+            if now >= market_close_today and last_news_date != str(now.date()):
+                fund["last_news_check"] = now.isoformat()
+                _save_fund(fund)
+                await loop.run_in_executor(_fund_executor, _run_news_check)
 
             # Weekly catalyst scan (autonomous discovery)
             fund = _load_fund()
@@ -2265,6 +2624,7 @@ async def startup():
     asyncio.create_task(_monitor_scheduler())
     asyncio.create_task(_scout_scheduler())
     asyncio.create_task(_fund_scheduler())
+    asyncio.create_task(_strategy_scheduler())
     token = os.environ.get("DISCORD_BOT_TOKEN", "").strip()
     if token:
         t = threading.Thread(target=_run_discord_bot, daemon=True)
@@ -3085,3 +3445,260 @@ async def get_portfolio_history():
         return json.loads(PORTFOLIO_HISTORY_FILE.read_text())
     except Exception:
         return []
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Strategy Engine — the deterministic layer under the LLM crew
+# ══════════════════════════════════════════════════════════════════════════════
+# Pure-code strategies (mean reversion / momentum breakout / trend following)
+# with ATR sizing, hard stops, and a correlation filter. Paper-only, starts
+# paused. The LLM crew reviews this engine's trade log weekly (oversight) but
+# never makes per-trade decisions here. See strategies/ for the implementation.
+
+from strategies import backtest as strategy_backtest
+from strategies import data as strategy_data
+from strategies.engine import engine as strategy_engine
+
+_engine_executor = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix="engine")
+_backtest_executor = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix="backtest")
+
+
+class EngineBacktestRequest(BaseModel):
+    strategies: Optional[List[str]] = None   # default: all configured strategies
+    years: int = 3
+    initial_equity: float = 100_000.0
+    slippage_bps: float = 2.0
+
+
+@app.get("/engine")
+async def engine_status():
+    """Engine state: active flag, config, open positions, recent trades, log."""
+    return strategy_engine.status()
+
+
+@app.post("/engine/start")
+async def engine_start():
+    result = strategy_engine.start()
+    if result.get("error"):
+        raise HTTPException(status_code=400, detail=result["error"])
+    return result
+
+
+@app.post("/engine/pause")
+async def engine_pause():
+    return strategy_engine.pause()
+
+
+@app.post("/engine/config")
+async def engine_config(patch: dict):
+    """Merge config changes (engine-level keys and/or per-strategy params)."""
+    return {"config": strategy_engine.update_config(patch)}
+
+
+@app.post("/engine/tick")
+async def engine_tick():
+    """Run one tick now (debug/manual). Normally the scheduler does this."""
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(_engine_executor, strategy_engine.tick)
+
+
+@app.get("/engine/trades")
+async def engine_trades():
+    state = strategy_engine.get_state()
+    return {"trades": state.get("trades", []), "positions": state.get("positions", {})}
+
+
+@app.post("/engine/backtest")
+async def engine_backtest(req: EngineBacktestRequest):
+    """Kick off a backtest of the engine's strategies over historical bars."""
+    store = strategy_backtest.get_results()
+    if store.get("running"):
+        raise HTTPException(status_code=409, detail="a backtest is already running")
+    years = max(1, min(int(req.years), 5))
+    cfg = strategy_engine.get_state()["config"]
+    loop = asyncio.get_event_loop()
+    loop.run_in_executor(
+        _backtest_executor,
+        lambda: strategy_backtest.run_backtest(
+            cfg, req.strategies, years, req.initial_equity, req.slippage_bps
+        ),
+    )
+    return {"ok": True, "started": True, "years": years}
+
+
+@app.get("/engine/backtest")
+async def engine_backtest_results():
+    """Backtest status + stored results (newest first)."""
+    return strategy_backtest.get_results()
+
+
+@app.get("/engine/review")
+async def engine_review():
+    state = strategy_engine.get_state()
+    return {
+        "review": state.get("review"),
+        "last_review": state.get("last_review"),
+        "next_review": state.get("next_review"),
+    }
+
+
+@app.post("/engine/review/run")
+async def engine_review_run():
+    """Trigger the weekly LLM oversight review now."""
+    loop = asyncio.get_event_loop()
+    loop.run_in_executor(_engine_executor, _run_strategy_review)
+    return {"ok": True, "started": True}
+
+
+def _engine_trade_summary(trades: list) -> dict:
+    """Per-strategy aggregates the oversight LLM can reason over."""
+    per = {}
+    for t in trades:
+        s = per.setdefault(t.get("strategy", "?"), {"trades": 0, "wins": 0, "pnl": 0.0, "stops_hit": 0})
+        s["trades"] += 1
+        if (t.get("pnl") or 0) > 0:
+            s["wins"] += 1
+        s["pnl"] = round(s["pnl"] + (t.get("pnl") or 0), 2)
+        if t.get("reason") == "hard_stop":
+            s["stops_hit"] += 1
+    for s in per.values():
+        s["win_rate_pct"] = round(s["wins"] / s["trades"] * 100, 1) if s["trades"] else None
+    return per
+
+
+def _engine_regime_snapshot(symbols: list) -> dict:
+    """Cheap volatility/trend context per symbol so the reviewer can spot
+    regime changes (e.g. 'vol doubled — mean reversion is getting chopped')."""
+    import pandas as pd
+    regime = {}
+    for sym in symbols:
+        try:
+            df = strategy_data.fetch_bars(sym, "1Hour", days=30)
+            if df.empty or len(df) < 100:
+                continue
+            rets = df["close"].pct_change().dropna()
+            cutoff = pd.Timestamp.now(tz="UTC") - pd.Timedelta(days=7)
+            recent = rets[rets.index >= cutoff]
+            prior = rets[rets.index < cutoff]
+            regime[sym] = {
+                "vol_last_7d": round(float(recent.std()) * 100, 3) if len(recent) > 5 else None,
+                "vol_prior_23d": round(float(prior.std()) * 100, 3) if len(prior) > 5 else None,
+                "trend_30d_pct": round((float(df["close"].iloc[-1]) / float(df["close"].iloc[0]) - 1) * 100, 2),
+            }
+        except Exception:
+            continue
+    return regime
+
+
+def _run_strategy_review():
+    """Weekly oversight: the LLM crew reads the engine's trade log + regime
+    data and recommends keep/adjust/pause per strategy. ADVISORY ONLY — the
+    engine never auto-applies changes; Drew does, from the UI."""
+    try:
+        state = strategy_engine.get_state()
+        cfg = state.get("config", {})
+        trades = state.get("trades", [])
+        week_ago = (datetime.utcnow() - timedelta(days=7)).isoformat()
+        recent = [t for t in trades if (t.get("exit_time") or "") >= week_ago]
+        symbols = sorted({s for p in cfg.get("strategies", {}).values() for s in p.get("symbols", [])})
+
+        context = {
+            "engine_active": state.get("active"),
+            "config": cfg,
+            "open_positions": state.get("positions", {}),
+            "last_7_days_per_strategy": _engine_trade_summary(recent),
+            "all_time_per_strategy": _engine_trade_summary(trades),
+            "recent_trades": trades[:15],
+            "market_regime": _engine_regime_snapshot(symbols),
+        }
+
+        fund_cfg = _load_fund().get("config", {})
+        provider = fund_cfg.get("llm_provider", "google")
+        model = fund_cfg.get("deep_think_llm", "gemini-2.5-pro")
+
+        from tradingagents.llm_clients.factory import create_llm_client
+        from langchain_core.messages import HumanMessage, SystemMessage
+
+        system = (
+            "You are the risk-oversight desk for a deterministic paper-trading engine. "
+            "The engine trades fixed rules (mean reversion on index ETFs, momentum breakout "
+            "on BTC, trend following on commodity ETFs) with ATR sizing and hard stops. "
+            "You do NOT pick trades. You review the engine's results and the market regime, "
+            "then recommend — per strategy — whether to KEEP it running as-is, ADJUST "
+            "parameters (say exactly which and to what), or PAUSE it. Ground every verdict "
+            "in the data provided; small sample sizes deserve explicit caution, not "
+            "confident conclusions. This is research, not financial advice."
+        )
+        question = (
+            "Here is the engine's current state and results:\n\n"
+            f"{json.dumps(context, indent=2, default=str)[:12000]}\n\n"
+            "Respond with ONLY a JSON object shaped exactly like:\n"
+            '{"strategies": {"<name>": {"verdict": "KEEP|ADJUST|PAUSE", '
+            '"reasoning": "...", "suggested_changes": {}}}, "overall": "..."}'
+        )
+
+        client = create_llm_client(provider, model)
+        llm = client.get_llm()
+        response = llm.invoke([SystemMessage(content=system), HumanMessage(content=question)])
+        raw = getattr(response, "content", str(response))
+
+        # Parse leniently — strip code fences, then try JSON.
+        cleaned = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw.strip(), flags=re.MULTILINE)
+        try:
+            parsed = json.loads(cleaned)
+        except Exception:
+            parsed = {"overall": raw[:2000], "strategies": {}}
+
+        review = {
+            "generated_at": datetime.utcnow().isoformat() + "Z",
+            "provider": provider,
+            "model": model,
+            "verdicts": parsed.get("strategies", {}),
+            "overall": parsed.get("overall", ""),
+            "data_window": {"recent_trades": len(recent), "all_time_trades": len(trades)},
+        }
+        strategy_engine.set_review(review)
+        _app_logger.info("[engine] weekly review generated")
+
+        fields = []
+        for name, v in (review["verdicts"] or {}).items():
+            fields.append({
+                "name": f"{name} — {v.get('verdict', '?')}",
+                "value": str(v.get("reasoning", ""))[:1000] or "—",
+                "inline": False,
+            })
+        _send_discord_webhook(
+            title="🧭 ELLIE — Weekly Strategy Review",
+            description=str(review.get("overall", ""))[:1500] or "Review complete.",
+            fields=fields[:8],
+            footer=f"strategy engine · {provider}/{model} · advisory only",
+        )
+    except Exception as exc:
+        _app_logger.error(f"[engine] weekly review failed — {exc}")
+
+
+async def _strategy_scheduler():
+    """Every 2 min: tick the engine (new-bar evaluation + stop sweep). Weekly:
+    run the LLM oversight review once the engine has any history."""
+    loop = asyncio.get_event_loop()
+    while True:
+        await asyncio.sleep(120)
+        try:
+            await loop.run_in_executor(_engine_executor, strategy_engine.tick)
+        except Exception:
+            pass
+        try:
+            state = strategy_engine.get_state()
+            if not (state.get("active") or state.get("trades")):
+                continue
+            now = datetime.utcnow()
+            next_review = state.get("next_review")
+            if not next_review:
+                strategy_engine.save_fields(
+                    next_review=(now + timedelta(days=7)).isoformat() + "Z")
+            elif datetime.fromisoformat(next_review.replace("Z", "")) <= now:
+                strategy_engine.save_fields(
+                    next_review=(now + timedelta(days=7)).isoformat() + "Z")
+                await loop.run_in_executor(_engine_executor, _run_strategy_review)
+        except Exception:
+            pass

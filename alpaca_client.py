@@ -241,16 +241,19 @@ def submit_order(
     side: str,
     qty: float = None,
     notional: float = None,
+    tif: str = "day",
 ) -> dict:
     """
     Submit a market order.
 
     Args:
-        symbol:   Ticker symbol (e.g. "AAPL").
+        symbol:   Ticker symbol (e.g. "AAPL", or "BTC/USD" for crypto).
         side:     "buy" or "sell".
         qty:      Number of shares (fractional supported). Mutually exclusive
                   with notional.
         notional: Dollar amount to buy/sell. Mutually exclusive with qty.
+        tif:      Time in force — "day" | "gtc" | "ioc". Crypto orders must use
+                  "gtc" or "ioc" (Alpaca rejects "day" for crypto).
 
     Returns the submitted order as a dict, or an error dict on failure.
     """
@@ -263,11 +266,16 @@ def submit_order(
 
     try:
         order_side = OrderSide.BUY if side.lower() == "buy" else OrderSide.SELL
+        tif_enum = {
+            "day": TimeInForce.DAY,
+            "gtc": TimeInForce.GTC,
+            "ioc": TimeInForce.IOC,
+        }.get(tif.lower(), TimeInForce.DAY)
 
         request_kwargs = dict(
             symbol=symbol.upper(),
             side=order_side,
-            time_in_force=TimeInForce.DAY,
+            time_in_force=tif_enum,
         )
         if qty is not None:
             request_kwargs["qty"] = qty
