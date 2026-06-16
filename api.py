@@ -2581,7 +2581,7 @@ def _run_biweekly_analysis():
                     # trim that would leave only a dust stub is closed out instead.
                     qty_held      = float(pos.get("qty") or 0)
                     trim_fraction = float(cfg.get("trim_fraction", 0.5))
-                    trim_qty      = math.floor(qty_held * trim_fraction)
+                    trim_qty      = int(qty_held * trim_fraction)   # floor for a positive qty
                     is_trim       = (signal == "Underweight" and not emergency
                                      and 0 < trim_fraction < 1.0
                                      and trim_qty >= 1
