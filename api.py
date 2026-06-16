@@ -2575,10 +2575,34 @@ def _run_biweekly_analysis():
                 current_pct  = (market_value / portfolio_value * 100) if portfolio_value > 0 else 0
 
                 if signal in ("Sell", "Underweight"):
-                    alpaca_client.close_position(symbol)
-                    reason = "emergency exit" if emergency else f"signal after {days_held}d hold"
-                    _fund_log(f"Sold {symbol} — {reason}")
-                    _log_portfolio_action(symbol, "SELL", pos.get("qty"), price, signal, reasoning=raw_decision)
+                    # Sell = full exit. Underweight = TRIM — reduce the position /
+                    # take partial profits, don't liquidate it. An emergency
+                    # stop-loss always fully exits regardless of the signal, and a
+                    # trim that would leave only a dust stub is closed out instead.
+                    qty_held      = float(pos.get("qty") or 0)
+                    trim_fraction = float(cfg.get("trim_fraction", 0.5))
+                    trim_qty      = math.floor(qty_held * trim_fraction)
+                    is_trim       = (signal == "Underweight" and not emergency
+                                     and 0 < trim_fraction < 1.0
+                                     and trim_qty >= 1
+                                     and (qty_held - trim_qty) * price >= 500)
+                    if is_trim:
+                        order = alpaca_client.submit_order(symbol, "sell", qty=trim_qty)
+                        if isinstance(order, dict) and order.get("error"):
+                            _fund_log(f"Trim {symbol}: sell {trim_qty:g} failed — {order['error']}")
+                        else:
+                            _fund_log(f"Trimmed {symbol} — sold {trim_qty:g} of {qty_held:g} sh "
+                                      f"({trim_fraction:.0%}) after {days_held}d hold")
+                            _log_portfolio_action(symbol, "TRIM", trim_qty, price, signal,
+                                                  reasoning=raw_decision)
+                    else:
+                        alpaca_client.close_position(symbol)
+                        reason = ("emergency exit" if emergency
+                                  else "Sell signal" if signal == "Sell"
+                                  else "trim remainder too small")
+                        _fund_log(f"Sold {symbol} (full exit) — {reason} after {days_held}d hold")
+                        _log_portfolio_action(symbol, "SELL", qty_held, price, signal,
+                                              reasoning=raw_decision)
                 elif signal in ("Buy", "Overweight"):
                     max_pct = cfg.get("max_position_pct", 15.0)
                     if current_pct < max_pct:
