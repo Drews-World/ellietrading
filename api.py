@@ -1909,26 +1909,37 @@ def _run_analysis_simple(ticker: str, cfg: dict, max_retries: int = 3):
 
         except Exception as exc:
             exc_str = str(exc)
-            is_rate_limit = "RESOURCE_EXHAUSTED" in exc_str or "429" in exc_str or "quota" in exc_str.lower()
-            if is_rate_limit:
+            low = exc_str.lower()
+            is_rate_limit = "RESOURCE_EXHAUSTED" in exc_str or "429" in exc_str or "quota" in low
+            # Transient provider outages are temporary by definition ("try again
+            # later"): 503/UNAVAILABLE/overloaded, other 5xx, and timeouts. Treat
+            # them like a rate limit — rotate models, back off, retry — rather than
+            # giving up on the ticker.
+            is_transient = is_rate_limit \
+                or any(s in exc_str for s in ("503", "500", "502", "504", "UNAVAILABLE")) \
+                or any(s in low for s in ("unavailable", "overloaded", "high demand",
+                                          "temporar", "try again", "deadline",
+                                          "timeout", "timed out"))
+            if is_transient:
+                kind = "rate limited" if is_rate_limit else "provider unavailable"
                 next_idx = model_idx + 1
                 if next_idx < len(rotation):
                     # Rotate to next model immediately — no sleep
                     next_deep, next_quick = rotation[next_idx]
-                    _fund_log(f"{ticker}: rate limited on {deep} — rotating to {next_deep}")
+                    _fund_log(f"{ticker}: {kind} on {deep} — rotating to {next_deep}")
                     _send_discord_webhook(
                         title=f"⚡ Model Rotated — {ticker}",
-                        description=f"Rate limit hit on **{deep}**. Switching to **{next_deep}**.",
+                        description=f"**{deep}** {kind}. Switching to **{next_deep}**.",
                         signal="Hold",
                     )
                     model_idx = next_idx
                     continue
                 else:
-                    # All models exhausted — wait 60s then retry the last one
-                    _fund_log(f"{ticker}: all models rate limited — waiting 60s…")
+                    # Every model unavailable — wait 60s then retry the last one
+                    _fund_log(f"{ticker}: all models {kind} — waiting 60s…")
                     _send_discord_webhook(
-                        title=f"⏳ All Models Rate Limited — {ticker}",
-                        description=f"Every model in the rotation hit its quota. Waiting **60s** then retrying with **{deep}**.",
+                        title=f"⏳ All Models Unavailable — {ticker}",
+                        description=f"Every model in the rotation is {kind}. Waiting **60s** then retrying with **{deep}**.",
                         signal="Hold",
                     )
                     time.sleep(60)
@@ -1941,6 +1952,23 @@ def _run_analysis_simple(ticker: str, cfg: dict, max_retries: int = 3):
                     signal="",
                 )
                 raise
+
+    # Every attempt exhausted while the provider stayed unavailable. Don't return
+    # None (callers unpack the result) and don't fabricate a signal — surface a
+    # transient error so the caller defers this ticker to its next scheduled cycle
+    # and tries again later.
+    _fund_log(f"{ticker}: analysis deferred — provider unavailable after "
+              f"{max_retries + len(rotation)} attempts; will retry on the next cycle")
+    _send_discord_webhook(
+        title=f"⏭️ Analysis Deferred — {ticker}",
+        description="The model provider stayed unavailable through every retry. "
+                    "Leaving things untouched and trying again on the next scheduled run.",
+        signal="Hold",
+    )
+    raise RuntimeError(
+        f"Analysis for {ticker} deferred: model provider unavailable after "
+        f"{max_retries + len(rotation)} attempts — will retry next cycle"
+    )
 
 
 def _run_fund_launch():
